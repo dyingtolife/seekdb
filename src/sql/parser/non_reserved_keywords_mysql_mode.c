@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2025 OceanBase.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -396,7 +396,6 @@ static const NonReservedKeyword Mysql_none_reserved_keywords[] =
   {"read_ndjson", READ_NDJSON},
   {"read_parquet", READ_PARQUET},
   {"glob", GLOB},
-  {"copy", COPY},
   {"key", KEY},
   {"keys", KEYS},
   {"keyword", KEYWORD},
