@@ -66,7 +66,7 @@ int ObCsvCursor::parse_quoted_field(ObFileRow &row)
     if (c == '"') {
       if (pos_ + 1 < len_ && buf_[pos_ + 1] == '"') {
         // escaped quote
-        if (OB_FAIL(sb.append("\""))) {
+        if (OB_FAIL(sb.append("\"", 1))) {
         } else {
           pos_ += 2;
         }
@@ -79,7 +79,7 @@ int ObCsvCursor::parse_quoted_field(ObFileRow &row)
       if (c == '\n') {
         ++line_no_;
       }
-      if (OB_FAIL(sb.append(c))) {
+      if (OB_FAIL(sb.append(&c, 1))) {
       } else {
         ++pos_;
       }
@@ -280,10 +280,10 @@ static bool is_date_text(const common::ObString &s)
 static bool is_datetime_text(const common::ObString &s)
 {
   if (s.length() < 19) return false;
-  common::ObString date_part(s.ptr(), 10);
+  common::ObString date_part(10, s.ptr());
   const char sep = s[10];
   if (sep != ' ' && sep != 'T') return false;
-  const common::ObString time_part(s.ptr() + 11, static_cast<int32_t>(s.length() - 11));
+  const common::ObString time_part(static_cast<int32_t>(s.length() - 11), s.ptr() + 11);
   if (!is_date_text(date_part)) return false;
   // HH:MM:SS
   if (time_part.length() < 8) return false;

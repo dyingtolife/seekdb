@@ -19,8 +19,8 @@
 #include "ob_parquet_reader.h"
 #include <vector>
 #include <string>
-#include "lib/alloc/ob_malloc_hook.h"
-#include "lib/utility/ob_macro_utils.h"
+#include "lib/allocator/ob_malloc.h"
+
 
 namespace oceanbase
 {
