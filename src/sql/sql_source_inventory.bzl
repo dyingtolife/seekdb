@@ -219,6 +219,8 @@ SQL_UNITY_GROUPS = [
             "src/sql/engine/basic/ob_temp_table_access_op.cpp",
             "src/sql/engine/basic/ob_temp_table_insert_op.cpp",
             "src/sql/engine/basic/ob_temp_table_transformation_op.cpp",
+            "src/sql/engine/file/ob_file_scan_utils.cpp",
+            "src/sql/engine/file/ob_parquet_reader.cpp",
         ],
     ),
     struct(
