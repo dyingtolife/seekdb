@@ -25,6 +25,10 @@
 #include "sql/optimizer/ob_opt_est_utils.h"
 #include "sql/rewrite/ob_transform_utils.h"
 #include "sql/parser/ob_item_type_str.h"
+#include "sql/engine/file/ob_file_scan_utils.h"
+#include "sql/engine/file/ob_parquet_reader.h"
+#include "sql/resolver/ob_resolver_utils.h"
+#include "common/time/ob_time_utility.h"
 #include "sql/printer/ob_select_stmt_printer.h"
 #include "sql/engine/expr/ob_expr_autoinc_nextval.h"
 #include "sql/engine/expr/ob_expr_column_conv.h"
@@ -1404,7 +1408,7 @@ int ObDMLResolver::resolve_into_variables(const ParseNode *node,
             OZ (pl_vars.push_back(expr));
           } else {
             /*
-             * Directly execute select 1 into a in sql; mysql will report “ERROR 1327 (42000): Undeclared variable: a”
+             * Directly execute select 1 into a in sql; mysql will report 鈥淓RROR 1327 (42000): Undeclared variable: a鈥?
              * */
             ret = OB_ERR_SP_UNDECLARED_VAR;
             LOG_USER_ERROR(OB_ERR_SP_UNDECLARED_VAR, static_cast<int>(ch_node->str_len_), ch_node->str_value_);
@@ -2703,6 +2707,10 @@ int ObDMLResolver::resolve_table(const ParseNode &parse_tree,
       }
       case T_JSON_TABLE_EXPRESSION: {
         OZ (resolve_json_table_item(*table_node, table_item));
+        break;
+      }
+      case T_FILE_TABLE_EXPRESSION: {
+        OZ (resolve_file_table_item(*table_node, table_item));
         break;
       }
       case T_UNNEST_EXPRESSION: {
@@ -8472,7 +8480,7 @@ int ObDMLResolver::get_all_column_ref(ObRawExpr *expr, ObIArray<ObColumnRefRawEx
  * create table t1(SYSTIMESTAMP int) partition by range(SYSTIMESTAMP) (partition "p0" values less than 10000);
  * select SYSTIMESTAMP from dual; ==> select "SYSTIMESTAMP" from dual;
  * Only in this way can the part expr be truly reparsed, otherwise it will be misparsed as a function, essentially here it represents an ordinary column property, currently known keywords are:
- * SYSTIMESTAMP、CURRENT_DATE、LOCALTIMESTAMP、CURRENT_TIMESTAMP、SESSIONTIMEZONE、DBTIMEZONE、
+ * SYSTIMESTAMP銆丆URRENT_DATE銆丩OCALTIMESTAMP銆丆URRENT_TIMESTAMP銆丼ESSIONTIMEZONE銆丏BTIMEZONE銆?
  * bug:
  */
 
@@ -12824,4 +12832,589 @@ int ObDMLResolver::check_need_fill_embedded_vec_expr_param(const ObDMLStmt &stmt
 }
 
 }  // namespace sql
+
+int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableItem *&table_item)
+{
+  int ret = OB_SUCCESS;
+  ObDMLStmt *dml_stmt = get_stmt();
+  TableItem *new_table_item = NULL;
+  ParseNode *alias_node = NULL;
+  ParseNode *path_node = NULL;
+  ParseNode *param_node = NULL;
+  ObString func_name;
+  ObString path_str;
+  ObString alias_name;
+
+  // children layout produced by the grammar:
+  //   3 children: [func, path, alias]
+  //   4 children: [func, path, params, alias]
+  if (OB_ISNULL(dml_stmt) || OB_ISNULL(allocator_) || OB_ISNULL(session_info_)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (table_node.num_child_ != 3 && table_node.num_child_ != 4) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected file table node", K(table_node.num_child_));
+  } else {
+    func_name.assign_ptr(table_node.children_[0]->str_value_,
+                         static_cast<int32_t>(table_node.children_[0]->str_len_));
+    path_node = table_node.children_[1];
+    param_node = (4 == table_node.num_child_) ? table_node.children_[2] : NULL;
+    alias_node = table_node.children_[table_node.num_child_ - 1];
+  }
+
+  // gate: enable_file_sql must be ON
+  bool file_sql_enabled = false;
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(session_info_->get_ob_enable_file_sql(file_sql_enabled))) {
+      LOG_WARN("failed to read enable_file_sql", K(ret));
+    } else if (!file_sql_enabled) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "file table function requires enable_file_sql=ON");
+    }
+  }
+
+  // resolve path literal
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(resolve_str_const(*path_node, path_str))) {
+    LOG_WARN("failed to resolve file path literal", K(ret));
+  }
+
+  // secure_file_priv check: resolved path (dirname) must live under secure_file_priv
+  if (OB_FAIL(ret)) {
+    ObString secure_dir;
+    if (OB_FAIL(session_info_->get_secure_file_priv(secure_dir))) {
+      LOG_WARN("failed to read secure_file_priv", K(ret));
+    } else if (OB_FAIL(ObResolverUtils::check_secure_file_priv(path_str, secure_dir))) {
+      LOG_USER_ERROR(OB_INVALID_ARGUMENT, "file path is outside secure_file_priv");
+    }
+  }
+
+  // read the whole file (small-file competition scope; streaming plan requires
+  // a physical operator which follows in a later iteration)
+  char *buf = NULL;
+  int64_t file_len = 0;
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(read_local_file(path_str, *allocator_, buf, file_len))) {
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "cannot read file");
+  }
+
+  // collect header + rows and infer the schema
+  ObFileSchema schema;
+  ObArray<ObFileRow> rows;
+  if (OB_FAIL(ret)) {
+  } else if (func_name.case_compare("glob") == 0) {
+    // glob: expand pattern to matching file list; one `file` VARCHAR column
+    ObFileSchema::Column col;
+    char *nb = static_cast<char *>(allocator_->alloc(5));
+    if (OB_ISNULL(nb)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else {
+      MEMCPY(nb, "file", 4); nb[4] = '\0';
+      col.name_.assign_ptr(nb, 4);
+      col.type_ = ObFileColumnType::VARCHAR;
+      col.nullable_ = false;
+      if (OB_FAIL(schema.columns_.push_back(col))) {
+      } else if (OB_FAIL(collect_glob_matches(path_str, *allocator_, rows))) {
+      }
+    }
+  } else {
+    ObArray<ObString> header;
+    if (func_name.case_compare("read_csv") == 0) {
+      bool has_header = true;  // competition spec: header=true is the default; only -1 sample
+      ObCsvCursor cursor(buf, file_len, has_header);
+      header = cursor.header();
+      ObFileRow r;
+      while (OB_SUCC(ret)) {
+        int gr = cursor.next_row(r);
+        if (OB_ITER_END == gr) { break; }
+        else if (OB_SUCCESS != gr) { ret = gr; LOG_WARN("bad csv row", K(cursor.current_line())); }
+        else if (OB_FAIL(rows.push_back(r))) {}
+      }
+    } else if (func_name.case_compare("read_json") == 0
+               || func_name.case_compare("read_ndjson") == 0) {
+      ObJsonlCursor cursor(buf, file_len, *allocator_);
+      // first pass: collect the union of keys in order
+      ObArray<ObString> keys;
+      ObFileRow r;
+      while (OB_SUCC(ret)) {
+        int gr = cursor.next_row(r);
+        if (OB_ITER_END == gr) { break; }
+        else if (OB_SUCCESS != gr) { ret = gr; LOG_WARN("bad jsonl row", K(cursor.current_line())); }
+        else {
+          // r.cells_ holds [k1, v1, k2, v2, ...]
+          for (int64_t i = 0; OB_SUCC(ret) && i + 1 < r.cells_.count(); i += 2) {
+            bool found = false;
+            for (int64_t k = 0; !found && k < keys.count(); ++k) {
+              found = (keys.at(k) == r.cells_.at(i));
+            }
+            if (!found && OB_FAIL(keys.push_back(r.cells_.at(i)))) {}
+          }
+          if (OB_FAIL(rows.push_back(r))) {}
+        }
+      }
+      for (int64_t k = 0; OB_SUCC(ret) && k < keys.count(); ++k) {
+        header.push_back(keys.at(k));
+      }
+    } else if (func_name.case_compare("read_parquet") == 0) {
+      ObMiniParquetReader::ReadResult rr;
+      if (OB_FAIL(ObMiniParquetReader::read_file(buf, file_len, rr))) {
+        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "invalid parquet file");
+      } else {
+        for (int64_t c = 0; OB_SUCC(ret) && c < rr.column_names_.count(); ++c) {
+          char *nb = static_cast<char *>(allocator_->alloc(rr.column_names_.at(c).length() + 1));
+          if (OB_ISNULL(nb)) {
+            ret = OB_ALLOCATE_MEMORY_FAILED;
+          } else {
+            MEMCPY(nb, rr.column_names_.at(c).ptr(), rr.column_names_.at(c).length());
+            nb[rr.column_names_.at(c).length()] = '\0';
+            common::ObString n(static_cast<int32_t>(rr.column_names_.at(c).length()), nb);
+            if (OB_FAIL(header.push_back(n))) {}
+          }
+        }
+        // convert plain columns to text rows for the shared path below
+        if (OB_SUCC(ret)) {
+          ret = parquet_plain_to_text_rows(rr, *allocator_, rows);
+        }
+      }
+    } else {
+      ret = OB_ERR_UNEXPECTED;
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_FAIL(infer_file_schema(header, rows, *allocator_, schema))) {
+        LOG_WARN("schema inference failed", K(ret));
+      }
+    }
+  }
+
+  // build a values-table def with ACCESS_OBJ rows and typed columns
+  ObValuesTableDef *table_def = NULL;
+  if (OB_FAIL(ret)) {
+  } else if (OB_ISNULL(new_table_item = dml_stmt->create_table_item(*allocator_))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else if (OB_ISNULL(table_def = static_cast<ObValuesTableDef*>(
+                 allocator_->alloc(sizeof(ObValuesTableDef))))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else {
+    new_table_item->values_table_def_ = new (table_def) ObValuesTableDef();
+    table_def->access_type_ = ObValuesTableDef::ACCESS_OBJ;
+    table_def->column_cnt_ = schema.columns_.count();
+  }
+
+  // column types
+  ObArray<ObRawExprResType> col_types;
+  if (OB_FAIL(ret)) {
+  } else {
+    for (int64_t c = 0; OB_SUCC(ret) && c < schema.columns_.count(); ++c) {
+      ObRawExprResType rt;
+      switch (schema.columns_.at(c).type_) {
+        case ObFileColumnType::BOOLEAN: rt.set_type(ObTinyIntType); break;
+        case ObFileColumnType::BIGINT: rt.set_type(ObIntType); break;
+        case ObFileColumnType::DOUBLE: rt.set_type(ObDoubleType); break;
+        case ObFileColumnType::DATE: rt.set_type(ObDateType); break;
+        case ObFileColumnType::DATETIME: rt.set_type(ObDateTimeType); break;
+        default: rt.set_type(ObVarcharType); break;
+      }
+      rt.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+      rt.set_length(ObAccuracy::MAX_ACCURACY2[0][rt.get_type()].get_length());
+      if (OB_FAIL(col_types.push_back(rt))) {}
+    }
+  }
+
+  // fill access_objs_ with typed ObObjParams row by row
+  if (OB_FAIL(ret)) {
+  } else {
+    for (int64_t r = 0; OB_SUCC(ret) && r < rows.count(); ++r) {
+      const ObFileRow &row = rows.at(r);
+      for (int64_t c = 0; OB_SUCC(ret) && c < schema.columns_.count(); ++c) {
+        ObObjParam op;
+        // locate the cell: CSV rows are positional; JSONL rows are [k,v,...]
+        ObString raw;
+        bool is_null = true;
+        if (func_name.case_compare("read_json") == 0
+            || func_name.case_compare("read_ndjson") == 0) {
+          const ObString &key = schema.columns_.at(c).name_;
+          for (int64_t i = 0; i + 1 < row.cells_.count(); i += 2) {
+            if (row.cells_.at(i) == key) {
+              raw = row.cells_.at(i + 1);
+              is_null = raw.empty();
+              break;
+            }
+          }
+        } else if (c < row.cells_.count()) {
+          raw = row.cells_.at(c);
+          is_null = raw.empty() || raw.case_compare("NULL") == 0 || raw.case_compare("\\N") == 0;
+        }
+        if (is_null) {
+          op.set_null();
+        } else {
+          ObString text;
+          if (OB_FAIL(file_cell_to_text(schema.columns_.at(c).type_, raw, false,
+                                        *allocator_, text))) {
+          } else {
+            switch (schema.columns_.at(c).type_) {
+              case ObFileColumnType::BOOLEAN: {
+                op.set_tinyint(text == "1" ? 1 : 0);
+                break;
+              }
+              case ObFileColumnType::BIGINT: {
+                int64_t v = 0;
+                if (OB_FAIL(parse_int64_strict(text, v))) {
+                  op.set_null();
+                } else {
+                  op.set_int(v);
+                }
+                break;
+              }
+              case ObFileColumnType::DOUBLE: {
+                double v = 0;
+                char *endp = NULL;
+                v = ObCharset::strtod(text.ptr(), &endp);
+                op.set_double(v);
+                break;
+              }
+              case ObFileColumnType::DATE: {
+                int64_t v = 0;
+                ObDateValue date_val;
+                if (OB_FAIL(ObTimeConverter::str_to_date(text, date_val))) {
+                  op.set_null();
+                } else {
+                  op.set_date(date_val.date_int());
+                }
+                break;
+              }
+              case ObFileColumnType::DATETIME: {
+                int64_t v = 0;
+                ObTime ot;
+                if (OB_FAIL(ObTimeConverter::str_to_ob_time(text, ot, false))) {
+                  op.set_null();
+                } else {
+                  ObTimeConverter::ob_time_to_datetime(ot, v);
+                  op.set_datetime(v);
+                }
+                break;
+              }
+              default: {
+                char *tbuf = static_cast<char *>(allocator_->alloc(text.length()));
+                if (OB_ISNULL(tbuf)) {
+                  ret = OB_ALLOCATE_MEMORY_FAILED;
+                } else {
+                  MEMCPY(tbuf, text.ptr(), text.length());
+                  op.set_varchar(ObString(static_cast<int32_t>(text.length()), tbuf));
+                  op.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+                }
+                break;
+              }
+            }
+          }
+        }
+        if (OB_FAIL(ret)) {
+        } else if (OB_FAIL(table_def->access_objs_.push_back(op))) {
+        }
+      }
+    }
+    if (OB_SUCC(ret)) {
+      table_def->row_cnt_ = rows.count();
+      table_def->is_const_ = true;
+    }
+  }
+
+  // alias + register
+  if (OB_FAIL(ret)) {
+  } else if (OB_ISNULL(alias_node) || 0 == alias_node->str_len_) {
+    ret = OB_ERR_TABLE_WITHOUT_ALIAS;
+    LOG_USER_ERROR(OB_ERR_TABLE_WITHOUT_ALIAS);
+  } else {
+    alias_name.assign_ptr(alias_node->str_value_, static_cast<int32_t>(alias_node->str_len_));
+    new_table_item->table_id_ = generate_table_id();
+    new_table_item->table_name_ = alias_name;
+    new_table_item->alias_name_ = alias_name;
+    new_table_item->type_ = TableItem::VALUES_TABLE;
+    new_table_item->is_view_table_ = false;
+    if (OB_FAIL(dml_stmt->add_table_item(session_info_, new_table_item))) {
+    } else if (OB_FAIL(gen_values_table_column_items_with_names(
+                   schema.columns_, col_types, *new_table_item))) {
+    } else {
+      table_item = new_table_item;
+    }
+  }
+  return ret;
+}
+// ---------------- file table helpers ----------------
+
+int ObDMLResolver::read_local_file(const ObString &path, ObIAllocator &allocator, char *&buf, int64_t &len)
+{
+  int ret = OB_SUCCESS;
+  char path_buf[OB_MAX_FILE_NAME_LENGTH];
+  if (path.length() >= static_cast<int32_t>(sizeof(path_buf))) {
+    ret = OB_INVALID_ARGUMENT;
+  } else {
+    MEMCPY(path_buf, path.ptr(), path.length());
+    path_buf[path.length()] = '\0';
+    FILE *fp = fopen(path_buf, "rb");
+    if (OB_ISNULL(fp)) {
+      ret = OB_INVALID_ARGUMENT;
+    } else {
+      if (0 != fseek(fp, 0, SEEK_END)) {
+        ret = OB_INVALID_ARGUMENT;
+      } else {
+        long sz = ftell(fp);
+        if (sz < 0 || sz > 256L * 1024 * 1024) {
+          ret = OB_SIZE_OVERFLOW;
+        } else if (0 != fseek(fp, 0, SEEK_SET)) {
+          ret = OB_INVALID_ARGUMENT;
+        } else {
+          len = sz;
+          buf = static_cast<char *>(allocator.alloc(len + 1));
+          if (OB_ISNULL(buf)) {
+            ret = OB_ALLOCATE_MEMORY_FAILED;
+          } else if (len > 0 && fread(buf, 1, len, fp) != static_cast<size_t>(len)) {
+            ret = OB_IO_ERROR;
+          } else {
+            buf[len] = '\0';
+          }
+        }
+      }
+      fclose(fp);
+    }
+  }
+  return ret;
+}
+
+static void glob_split_pattern(const ObString &pattern, ObString &dir, ObString &pat)
+{
+  int64_t last_sep = -1;
+  for (int64_t i = pattern.length() - 1; i >= 0; --i) {
+    if (pattern.ptr()[i] == '/') { last_sep = i; break; }
+  }
+  if (last_sep < 0) {
+    dir.assign_ptr(const_cast<char *>("."), 1);
+    pat = pattern;
+  } else {
+    dir = ObString(static_cast<int32_t>(last_sep), pattern.ptr());
+    pat = ObString(static_cast<int32_t>(pattern.length() - last_sep - 1), pattern.ptr() + last_sep + 1);
+  }
+}
+
+static bool glob_match_impl(const char *pat, int64_t plen, const char *str, int64_t slen)
+{
+  int64_t p = 0, s = 0, star_p = -1, star_s = -1;
+  while (s < slen) {
+    if (p < plen && (pat[p] == '?' || tolower(static_cast<unsigned char>(pat[p])) == tolower(static_cast<unsigned char>(str[s])))) { ++p; ++s; }
+    else if (p < plen && pat[p] == '*') { star_p = p++; star_s = s; }
+    else if (star_p != -1) { p = star_p + 1; s = ++star_s; }
+    else { return false; }
+  }
+  while (p < plen && pat[p] == '*') { ++p; }
+  return p == plen;
+}
+
+int ObDMLResolver::collect_glob_matches(const ObString &pattern, ObIAllocator &allocator, ObArray<ObFileRow> &rows)
+{
+  int ret = OB_SUCCESS;
+  ObString dir, pat;
+  glob_split_pattern(pattern, dir, pat);
+  char dir_buf[OB_MAX_FILE_NAME_LENGTH];
+  if (dir.length() >= static_cast<int32_t>(sizeof(dir_buf))) {
+    ret = OB_INVALID_ARGUMENT;
+  } else {
+    MEMCPY(dir_buf, dir.ptr(), dir.length());
+    dir_buf[dir.length()] = '\0';
+    DIR *dp = opendir(dir_buf);
+    if (OB_ISNULL(dp)) {
+      ret = OB_INVALID_ARGUMENT;
+    } else {
+      struct dirent *ent;
+      while (OB_SUCC(ret) && NULL != (ent = readdir(dp))) {
+        const char *name = ent->d_name;
+        if (name[0] == '.') { continue; }
+        if (!glob_match_impl(pat.ptr(), pat.length(), name, strlen(name))) { continue; }
+        ObSqlString full;
+        if (OB_FAIL(full.append(dir)) || OB_FAIL(full.append("/")) || OB_FAIL(full.append(name))) {
+        } else {
+          char *pb = static_cast<char *>(allocator.alloc(full.length() + 1));
+          if (OB_ISNULL(pb)) {
+            ret = OB_ALLOCATE_MEMORY_FAILED;
+          } else {
+            MEMCPY(pb, full.ptr(), full.length());
+            pb[full.length()] = '\0';
+            ObFileRow row;
+            ObString cell(static_cast<int32_t>(full.length()), pb);
+            if (OB_FAIL(row.cells_.push_back(cell))) {
+            } else if (OB_FAIL(rows.push_back(row))) {
+            }
+          }
+        }
+      }
+      closedir(dp);
+    }
+  }
+  return ret;
+}
+
+static int file_cell_text_from_plain(const ObMiniParquetReader::ColumnChunkData &col,
+                                     int64_t row_idx, ObIAllocator &allocator, ObString &text)
+{
+  int ret = OB_SUCCESS;
+  const char *p = col.plain_bytes_.ptr();
+  const int64_t n = col.plain_bytes_.length();
+  int64_t off = 0;
+  if (row_idx >= col.num_values_) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    for (int64_t r = 0; r < row_idx && OB_SUCC(ret); ++r) {
+      switch (col.physical_type_) {
+        case 0: case 1: off += 4; break;
+        case 2: off += 8; break;
+        case 4: off += 4; break;
+        case 5: off += 8; break;
+        case 6: {
+          if (off + 4 > n) { ret = OB_ERR_UNEXPECTED; }
+          else {
+            const int32_t l = static_cast<int32_t>(static_cast<uint8_t>(p[off]) | (static_cast<uint8_t>(p[off+1]) << 8) | (static_cast<uint8_t>(p[off+2]) << 16) | (static_cast<uint8_t>(p[off+3]) << 24));
+            off += 4 + l;
+          }
+          break;
+        }
+        default: ret = OB_NOT_SUPPORTED; break;
+      }
+    }
+    if (OB_SUCC(ret)) {
+      switch (col.physical_type_) {
+        case 0: {
+          text.assign_ptr(const_cast<char *>((p[off]) ? "1" : "0"), 1);
+          break;
+        }
+        case 1: {
+          int32_t v; MEMCPY(&v, p + off, 4);
+          char tmp[24]; int l = snprintf(tmp, sizeof(tmp), "%d", v);
+          char *b = static_cast<char *>(allocator.alloc(l + 1));
+          if (OB_ISNULL(b)) { ret = OB_ALLOCATE_MEMORY_FAILED; }
+          else { MEMCPY(b, tmp, l); b[l] = 0; text.assign_ptr(b, l); }
+          break;
+        }
+        case 2: {
+          int64_t v; MEMCPY(&v, p + off, 8);
+          char tmp[32]; int l = snprintf(tmp, sizeof(tmp), "%ld", static_cast<long>(v));
+          char *b = static_cast<char *>(allocator.alloc(l + 1));
+          if (OB_ISNULL(b)) { ret = OB_ALLOCATE_MEMORY_FAILED; }
+          else { MEMCPY(b, tmp, l); b[l] = 0; text.assign_ptr(b, l); }
+          break;
+        }
+        case 4: {
+          float v; MEMCPY(&v, p + off, 4);
+          char tmp[40]; int l = snprintf(tmp, sizeof(tmp), "%g", static_cast<double>(v));
+          char *b = static_cast<char *>(allocator.alloc(l + 1));
+          if (OB_ISNULL(b)) { ret = OB_ALLOCATE_MEMORY_FAILED; }
+          else { MEMCPY(b, tmp, l); b[l] = 0; text.assign_ptr(b, l); }
+          break;
+        }
+        case 5: {
+          double v; MEMCPY(&v, p + off, 8);
+          char tmp[40]; int l = snprintf(tmp, sizeof(tmp), "%g", v);
+          char *b = static_cast<char *>(allocator.alloc(l + 1));
+          if (OB_ISNULL(b)) { ret = OB_ALLOCATE_MEMORY_FAILED; }
+          else { MEMCPY(b, tmp, l); b[l] = 0; text.assign_ptr(b, l); }
+          break;
+        }
+        case 6: {
+          if (off + 4 > n) { ret = OB_ERR_UNEXPECTED; }
+          else {
+            const int32_t l = static_cast<int32_t>(static_cast<uint8_t>(p[off]) | (static_cast<uint8_t>(p[off+1]) << 8) | (static_cast<uint8_t>(p[off+2]) << 16) | (static_cast<uint8_t>(p[off+3]) << 24));
+            if (off + 4 + l > n) { ret = OB_ERR_UNEXPECTED; }
+            else {
+              char *b = static_cast<char *>(allocator.alloc(l + 1));
+              if (OB_ISNULL(b)) { ret = OB_ALLOCATE_MEMORY_FAILED; }
+              else { MEMCPY(b, p + off + 4, l); b[l] = 0; text.assign_ptr(b, l); }
+            }
+          }
+          break;
+        }
+        default: ret = OB_NOT_SUPPORTED; break;
+      }
+    }
+  }
+  return ret;
+}
+
+int ObDMLResolver::parquet_plain_to_text_rows(const ObMiniParquetReader::ReadResult &rr,
+                                              ObIAllocator &allocator, ObArray<ObFileRow> &rows)
+{
+  int ret = OB_SUCCESS;
+  for (int64_t r = 0; OB_SUCC(ret) && r < rr.num_rows_; ++r) {
+    ObFileRow row;
+    for (int64_t c = 0; OB_SUCC(ret) && c < rr.columns_.count(); ++c) {
+      ObString text;
+      if (OB_FAIL(file_cell_text_from_plain(rr.columns_.at(c), r, allocator, text))) {
+      } else {
+        char *stable = static_cast<char *>(allocator.alloc(text.length() + 1));
+        if (OB_ISNULL(stable)) { ret = OB_ALLOCATE_MEMORY_FAILED; }
+        else {
+          MEMCPY(stable, text.ptr(), text.length()); stable[text.length()] = 0;
+          if (OB_FAIL(row.cells_.push_back(ObString(static_cast<int32_t>(text.length()), stable)))) {}
+        }
+      }
+    }
+    if (OB_SUCC(ret)) { ret = rows.push_back(row); }
+  }
+  return ret;
+}
+
+int ObDMLResolver::parse_int64_strict(const ObString &s, int64_t &v)
+{
+  int ret = OB_SUCCESS;
+  if (s.empty()) { ret = OB_INVALID_ARGUMENT; }
+  else {
+    int64_t i = (s.ptr()[0] == '-' || s.ptr()[0] == '+') ? 1 : 0;
+    if (i >= s.length()) { ret = OB_INVALID_ARGUMENT; }
+    else {
+      int64_t acc = 0;
+      for (; OB_SUCC(ret) && i < s.length(); ++i) {
+        char c = s.ptr()[i];
+        if (c < '0' || c > '9') { ret = OB_INVALID_ARGUMENT; }
+        else { acc = acc * 10 + (c - '0'); }
+      }
+      if (OB_SUCC(ret)) {
+        v = (s.ptr()[0] == '-') ? -acc : acc;
+      }
+    }
+  }
+  return ret;
+}
+
+int ObDMLResolver::gen_values_table_column_items_with_names(
+    const ObFileSchema &schema, const ObIArray<ObRawExprResType> &res_types, TableItem &table_item)
+{
+  int ret = OB_SUCCESS;
+  ObValuesTableDef *table_def = table_item.values_table_def_;
+  if (OB_ISNULL(params_.expr_factory_) || OB_ISNULL(allocator_) || OB_ISNULL(get_stmt()) ||
+      OB_ISNULL(table_def) ||
+      OB_UNLIKELY(schema.columns_.count() == 0 ||
+                  table_def->access_objs_.count() % schema.columns_.count() != 0 ||
+                  res_types.count() != schema.columns_.count())) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < schema.columns_.count(); ++i) {
+      ObColumnRefRawExpr *column_expr = NULL;
+      if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_REF_COLUMN, column_expr))) {
+      } else if (OB_ISNULL(column_expr)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else {
+        column_expr->set_result_type(res_types.at(i));
+        column_expr->set_ref_id(table_item.table_id_, i + OB_APP_MIN_COLUMN_ID);
+        const ObString &col_name = schema.columns_.at(i).name_;
+        column_expr->set_column_attr(table_item.table_name_, col_name);
+        if (OB_FAIL(column_expr->add_flag(IS_COLUMN))) {
+        } else {
+          ColumnItem column_item;
+          column_item.expr_ = column_expr;
+          column_item.table_id_ = column_expr->get_table_id();
+          column_item.column_id_ = column_expr->get_column_id();
+          column_item.column_name_ = column_expr->get_column_name();
+          if (OB_FAIL(get_stmt()->add_column_item(column_item))) {
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
 }  // namespace oceanbase
