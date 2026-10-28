@@ -300,6 +300,7 @@ END_P SET_VAR DELIMITER
         INVISIBLE MERGE ISNULL INTERSECT INCREMENTAL INNER_PARSE ILOGCACHE INPUT INDEXED INCONSISTENT INDIVIDUAL
 
         JOB JSON JSON_ARRAYAGG JSON_OBJECTAGG JSON_QUERY JSON_VALUE JSON_TABLE
+        READ_CSV READ_JSON READ_NDJSON READ_PARQUET GLOB COPY
 
         KEYWORD KEY_BLOCK_SIZE KEY_VERSION KVCACHE
 
@@ -557,6 +558,7 @@ opt_end_p:
 /* only preparable statement will set question mark size */
 stmt:
     select_stmt             { $$ = $1; question_mark_issue($$, result); }
+  | copy_stmt               { $$ = $1; check_question_mark($$, result); }
   | insert_stmt             { $$ = $1; question_mark_issue($$, result); }
   | create_table_stmt       {
     $$ = $1;
@@ -10836,6 +10838,10 @@ tbl_name
 {
   $$ = $1;
 }
+| file_table_expr
+{
+  $$ = $1;
+}
 | '(' table_references ')'
 {
   $$ = $2;
@@ -16622,6 +16628,98 @@ DAY
 
 /*===========================================================
 *
+*  COPY query TO file
+*============================================================*/
+copy_stmt:
+COPY '(' select_stmt ')' TO literal
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_COPY_TO, 2, $3, $6);
+}
+| COPY '(' select_stmt ')' TO literal file_table_param_list
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_COPY_TO, 3, $3, $6, $7);
+}
+| COPY '(' select_stmt ')' TO literal '(' file_table_param_list ')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_COPY_TO, 3, $3, $6, $8);
+}
+;
+
+/*===========================================================
+*
+*  FILE TABLE (read_csv / read_json / read_ndjson / read_parquet / glob)
+*============================================================*/
+
+file_table_expr:
+file_table_func_name '(' literal ')' relation_name
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $1, $3, $5);
+}
+| file_table_func_name '(' literal ')' AS relation_name
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $1, $3, $6);
+}
+| file_table_func_name '(' literal file_table_param_list ')' relation_name
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 4, $1, $3, $4, $6);
+}
+| file_table_func_name '(' literal file_table_param_list ')' AS relation_name
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 4, $1, $3, $4, $7);
+}
+| file_table_func_name '(' literal ')' %prec LOWER_PARENS
+{
+  ParseNode *unname_node = NULL;
+  make_name_node(unname_node, result->malloc_pool_, "");
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $1, $3, unname_node);
+}
+;
+
+file_table_param_list:
+file_table_param
+{
+  $$ = $1;
+}
+| file_table_param_list ',' file_table_param
+{
+  $$ = $1;
+  $$->num_child_val_++;
+  malloc_new_node_child($$, result->malloc_pool_, $3);
+}
+;
+
+file_table_param:
+NAME_OB '=' literal
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_EXPR_LIST, 2, $1, $3);
+}
+;
+
+file_table_func_name:
+READ_CSV
+{
+  make_name_node($$, result->malloc_pool_, "read_csv");
+}
+| READ_JSON
+{
+  make_name_node($$, result->malloc_pool_, "read_json");
+}
+| READ_NDJSON
+{
+  make_name_node($$, result->malloc_pool_, "read_ndjson");
+}
+| READ_PARQUET
+{
+  make_name_node($$, result->malloc_pool_, "read_parquet");
+}
+| GLOB
+{
+  make_name_node($$, result->malloc_pool_, "glob");
+}
+;
+
+/*===========================================================
+*
 *  JSON TABLE
 *============================================================*/
 
@@ -17754,6 +17852,12 @@ ACCOUNT
 |       JSON_OBJECTAGG
 |       JSON_QUERY
 |       JSON_TABLE
+|       READ_CSV
+|       READ_JSON
+|       READ_NDJSON
+|       READ_PARQUET
+|       GLOB
+|       COPY
 |       KEYWORD
 |       KEY_BLOCK_SIZE
 |       KEY_VERSION
