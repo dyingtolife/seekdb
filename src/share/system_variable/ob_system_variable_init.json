@@ -10976,4 +10976,20 @@
     "background_cn": "",
     "ref_url": ""
   }
+,
+  "enable_file_sql": {
+    "id": 10754,
+    "name": "enable_file_sql",
+    "default_value": "0",
+    "base_value": "0",
+    "data_type": "bool",
+    "info": "enable reading local files (read_csv/read_json/read_parquet/glob) as tables in SQL",
+    "flags": "SESSION | INFLUENCE_PLAN",
+    "min_val": "0",
+    "max_val": "1",
+    "publish_version": "1.0.0.0",
+    "info_cn": "",
+    "background_cn": "",
+    "ref_url": ""
+  }
 }
