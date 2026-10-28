@@ -33,7 +33,7 @@
   struct _ParseNode *node;
   const struct _NonReservedKeyword *non_reserved_keyword;
   const struct _NonReservedKeyword *reserved_keyword;
-  int32_t ival[2]; //ival[0]表示value, ival[1]表示fast parse在对应的该node及其子node可识别的常量个数
+  int32_t ival[2]; //ival[0]琛ㄧずvalue, ival[1]琛ㄧずfast parse鍦ㄥ搴旂殑璇ode鍙婂叾瀛恘ode鍙瘑鍒殑甯搁噺涓暟
   struct _ParseNodeOptParens *node_opt_parens;
 }
 
@@ -82,28 +82,28 @@
 %token <node> ID_DOT_ID_DOT_ID
 %token <node> ID_DOT_ID
 /*empty_query::
-// (1) 对于只有空格或者;的查询语句需要报错：如："" 或者 "   " 或者 ";" 或者 " ;  " 都需要报错：err_msg:Query was empty  errno:1065
-// (2) 对于只含有注释或者空格或者;的查询语句则需要返回成功：如："#fadfadf " 或者"/**\/" 或者 "/**\/  ;" 返回成功
+// (1) 瀵逛簬鍙湁绌烘牸鎴栬€?鐨勬煡璇㈣鍙ラ渶瑕佹姤閿欙細濡傦細"" 鎴栬€?"   " 鎴栬€?";" 鎴栬€?" ;  " 閮介渶瑕佹姤閿欙細err_msg:Query was empty  errno:1065
+// (2) 瀵逛簬鍙惈鏈夋敞閲婃垨鑰呯┖鏍兼垨鑰?鐨勬煡璇㈣鍙ュ垯闇€瑕佽繑鍥炴垚鍔燂細濡傦細"#fadfadf " 鎴栬€?/**\/" 鎴栬€?"/**\/  ;" 杩斿洖鎴愬姛
 */
 
 /*
- * 以％left开头的行定义算符的结合性
- * ％left表示其后的算符是遵循左结合的；
- * ％right表示右结合性，
- * ％nonassoc表示其后的算符没有结合性。
- * 优先级是隐含的，排在前面行的算符较后面行的算符的优先级低；
- * 排在同一行的算符优先级相同，因此，'+'和'-'优先级相同
- * 而它们的优先级都小于'*’，三个运算符都是左结合
+ * 浠ワ紖left寮€澶寸殑琛屽畾涔夌畻绗︾殑缁撳悎鎬?
+ * 锛卨eft琛ㄧず鍏跺悗鐨勭畻绗︽槸閬靛惊宸︾粨鍚堢殑锛?
+ * 锛卹ight琛ㄧず鍙崇粨鍚堟€э紝
+ * 锛卬onassoc琛ㄧず鍏跺悗鐨勭畻绗︽病鏈夌粨鍚堟€с€?
+ * 浼樺厛绾ф槸闅愬惈鐨勶紝鎺掑湪鍓嶉潰琛岀殑绠楃杈冨悗闈㈣鐨勭畻绗︾殑浼樺厛绾т綆锛?
+ * 鎺掑湪鍚屼竴琛岀殑绠楃浼樺厛绾х浉鍚岋紝鍥犳锛?+'鍜?-'浼樺厛绾х浉鍚?
+ * 鑰屽畠浠殑浼樺厛绾ч兘灏忎簬'*鈥欙紝涓変釜杩愮畻绗﹂兘鏄乏缁撳悎
  */
 
 /*
- * 在表达式中有时要用到一元运算符
- * 它可能与某个二元运算符是同一个符号
- * 如一元运算符负号“-”和二元运算符减号’-’相同
- * 一元运算符的优先级应该比相应的二元运算符的优先级高
- * 至少应该与’*'的优先级相同，这可以用yacc的％Prec子句来定义
+ * 鍦ㄨ〃杈惧紡涓湁鏃惰鐢ㄥ埌涓€鍏冭繍绠楃
+ * 瀹冨彲鑳戒笌鏌愪釜浜屽厓杩愮畻绗︽槸鍚屼竴涓鍙?
+ * 濡備竴鍏冭繍绠楃璐熷彿鈥?鈥濆拰浜屽厓杩愮畻绗﹀噺鍙封€?鈥欑浉鍚?
+ * 涓€鍏冭繍绠楃鐨勪紭鍏堢骇搴旇姣旂浉搴旂殑浜屽厓杩愮畻绗︾殑浼樺厛绾ч珮
+ * 鑷冲皯搴旇涓庘€?'鐨勪紭鍏堢骇鐩稿悓锛岃繖鍙互鐢▂acc鐨勶紖Prec瀛愬彞鏉ュ畾涔?
  * '-'expr %prec '*'
- * 它说明它所在的语法规则中最右边的运算符或终结符的优先级与%prec后面的符号的优先级相同
+ * 瀹冭鏄庡畠鎵€鍦ㄧ殑璇硶瑙勫垯涓渶鍙宠竟鐨勮繍绠楃鎴栫粓缁撶鐨勪紭鍏堢骇涓?prec鍚庨潰鐨勭鍙风殑浼樺厛绾х浉鍚?
  */
 
 %nonassoc BASIC OUTLINE EXTENDED EXTENDED_NOADDR PARTITIONS PLANREGRESS
@@ -215,12 +215,12 @@ END_P SET_VAR DELIMITER
 
 %token <reserved_keyword>
 /*
- * MySQL 5.7 Reserved Keywords（mysql5.7一共有235个保留关键字，这里兼容mysql5.7的229个，NULL关键字在
-   外面已经定义，所以这里注释了，而DEC、NUMERIC关键字在lex文件会转为NUMBER，同时另外4个关键字老版本一直没有定义为保
-   留关键字，出于兼容性考虑, 这里也不添加到其中，注释了，因此这6个关键字（DEC，NUMERIC，FALSE，LOCK，NUMERIC，
-   OPTIMIZER_COSTS， TRUE）在ob里面是可以使用的，和mysql有区别）
+ * MySQL 5.7 Reserved Keywords锛坢ysql5.7涓€鍏辨湁235涓繚鐣欏叧閿瓧锛岃繖閲屽吋瀹筸ysql5.7鐨?29涓紝NULL鍏抽敭瀛楀湪
+   澶栭潰宸茬粡瀹氫箟锛屾墍浠ヨ繖閲屾敞閲婁簡锛岃€孌EC銆丯UMERIC鍏抽敭瀛楀湪lex鏂囦欢浼氳浆涓篘UMBER锛屽悓鏃跺彟澶?涓叧閿瓧鑰佺増鏈竴鐩存病鏈夊畾涔変负淇?
+   鐣欏叧閿瓧锛屽嚭浜庡吋瀹规€ц€冭檻, 杩欓噷涔熶笉娣诲姞鍒板叾涓紝娉ㄩ噴浜嗭紝鍥犳杩?涓叧閿瓧锛圖EC锛孨UMERIC锛孎ALSE锛孡OCK锛孨UMERIC锛?
+   OPTIMIZER_COSTS锛?TRUE锛夊湪ob閲岄潰鏄彲浠ヤ娇鐢ㄧ殑锛屽拰mysql鏈夊尯鍒級
  * https://dev.mysql.com/doc/refman/5.7/en/keywords.html
- * 注意！！！非特殊情况，禁止将关键字放到该区域
+ * 娉ㄦ剰锛侊紒锛侀潪鐗规畩鎯呭喌锛岀姝㈠皢鍏抽敭瀛楁斁鍒拌鍖哄煙
  * */
 //-----------------------------reserved keyword begin-----------------------------------------------
         ACCESSIBLE ADD ALL ALTER ANALYZE AND AS ASC ASENSITIVE
@@ -638,14 +638,14 @@ stmt:
   | rollback_savepoint_stmt { $$ = $1; check_question_mark($$, result); }
   | release_savepoint_stmt  { $$ = $1; check_question_mark($$, result); }
   | lock_tables_stmt
-  /* banliu.zyd: 该语句为兼容mysqldump的空实现，置为非0使empty
-     query resolver不会报错， 这样做失去了原来保存question mark
-     的值，不过按代码逻辑这个值本身应该总为0, 且该值对本语句无意义*/
+  /* banliu.zyd: 璇ヨ鍙ヤ负鍏煎mysqldump鐨勭┖瀹炵幇锛岀疆涓洪潪0浣縠mpty
+     query resolver涓嶄細鎶ラ敊锛?杩欐牱鍋氬け鍘讳簡鍘熸潵淇濆瓨question mark
+     鐨勫€硷紝涓嶈繃鎸変唬鐮侀€昏緫杩欎釜鍊兼湰韬簲璇ユ€讳负0, 涓旇鍊煎鏈鍙ユ棤鎰忎箟*/
   { $$ = $1; check_question_mark($$, result); $$->value_ = 1; }
   | unlock_tables_stmt
-   /* banliu.zyd: 该语句为兼容mysqldump的空实现，置为非0使empty
-      query resolver不会报错， 这样做失去了原来保存question mark
-      的值，不过按代码逻辑这个值本身应该总为0, 且该值对本语句无意义 */
+   /* banliu.zyd: 璇ヨ鍙ヤ负鍏煎mysqldump鐨勭┖瀹炵幇锛岀疆涓洪潪0浣縠mpty
+      query resolver涓嶄細鎶ラ敊锛?杩欐牱鍋氬け鍘讳簡鍘熸潵淇濆瓨question mark
+      鐨勫€硷紝涓嶈繃鎸変唬鐮侀€昏緫杩欎釜鍊兼湰韬簲璇ユ€讳负0, 涓旇鍊煎鏈鍙ユ棤鎰忎箟 */
   { $$ = $1; check_question_mark($$, result); $$->value_ = 1; }
   | recyclebin_restore_stmt { $$ = $1; check_question_mark($$, result); }
   | purge_stmt              { $$ = $1; check_question_mark($$, result); }
@@ -674,7 +674,7 @@ stmt:
 *
 *****************************************************************************/
 
-// 专门为了解析pl的expr mock的语句类型
+// 涓撻棬涓轰簡瑙ｆ瀽pl鐨別xpr mock鐨勮鍙ョ被鍨?
 pl_expr_stmt:
     DO expr
     {
@@ -985,7 +985,7 @@ STRING_VALUE %prec LOWER_THAN_COMP
 }
 | charset_introducer HEX_STRING_VALUE
 {
-  /* _utf8mb4 0x42 作为字符串处理 */
+  /* _utf8mb4 0x42 浣滀负瀛楃涓插鐞?*/
   malloc_non_terminal_node($$, result->malloc_pool_, T_VARCHAR, 1, $1);
   $$->str_value_ = $2->str_value_;
   $$->str_len_ = $2->str_len_;
@@ -996,7 +996,7 @@ STRING_VALUE %prec LOWER_THAN_COMP
 }
 | charset_introducer BIN_STRING_VALUE
 {
-  /* _utf8mb4 0x42 作为字符串处理 */
+  /* _utf8mb4 0x42 浣滀负瀛楃涓插鐞?*/
   malloc_non_terminal_node($$, result->malloc_pool_, T_VARCHAR, 1, $1);
   $$->str_value_ = $2->str_value_;
   $$->str_len_ = $2->str_len_;
@@ -1303,12 +1303,12 @@ bit_expr IN in_expr
 }
 | bit_expr LIKE simple_expr
 {
-  //在resolver时，如果发现只有两个children，会将escape 参数设置为‘\’
+  //鍦╮esolver鏃讹紝濡傛灉鍙戠幇鍙湁涓や釜children锛屼細灏唀scape 鍙傛暟璁剧疆涓衡€榎鈥?
   malloc_non_terminal_node($$, result->malloc_pool_, T_OP_LIKE, 2, $1, $3);
 }
 | bit_expr LIKE simple_expr ESCAPE simple_expr %prec LIKE
 {
-  // 如果escape 为空串 '', 则使用默认值'\'
+  // 濡傛灉escape 涓虹┖涓?'', 鍒欎娇鐢ㄩ粯璁ゅ€?\'
   if (OB_UNLIKELY(T_VARCHAR == $5->type_ && 0 == $5->str_len_)) {
     ParseNode *node = NULL;
     malloc_terminal_node(node, result->malloc_pool_, T_VARCHAR);
@@ -1323,13 +1323,13 @@ bit_expr IN in_expr
 | bit_expr not LIKE simple_expr
 {
   (void)($2);
-  //在resolver时，如果发现只有两个children，会将escape 参数设置为‘\’
+  //鍦╮esolver鏃讹紝濡傛灉鍙戠幇鍙湁涓や釜children锛屼細灏唀scape 鍙傛暟璁剧疆涓衡€榎鈥?
   malloc_non_terminal_node($$, result->malloc_pool_, T_OP_NOT_LIKE, 2, $1, $4);
 }
 | bit_expr not LIKE simple_expr ESCAPE simple_expr %prec LIKE
 {
   (void)($2);
-  // 如果escape 为空串 '', 则使用默认值'\'
+  // 濡傛灉escape 涓虹┖涓?'', 鍒欎娇鐢ㄩ粯璁ゅ€?\'
   if (OB_UNLIKELY(T_VARCHAR == $6->type_ && 0 == $6->str_len_)) {
     ParseNode *node = NULL;
     malloc_terminal_node(node, result->malloc_pool_, T_VARCHAR);
@@ -1528,12 +1528,12 @@ simple_expr collation %prec NEG
 | '-' simple_expr %prec NEG
 {
   if (T_UINT64 == $2->type_ && 0 == $2->is_assigned_from_child_) {
-    //在非FAST_PARSER场景中，处于[INT64_MAX + 1, UINT64_MAX]之间的整数都被解析为UINT64
-    // 在simple expr是一个T_UINT64且值是'INT64_MAX + 1'时，需要将
-    // '-'和'INT64_MAX + 1'打包在一起作为一个T_INT的常量节点，因为'-' 'INT64_MAX + 1' = 'INT64_MIN'
-    // 但是对于-(INT64_MAX + 1)，由于词法不能知道这整体是一个整数，只能得到-(?)
-    // 所以生成NEG T_NUMBER。 -(INT64_MAX + 1)时，表达式的is_assigned_from_child_为1
-    //对于[INT64_MAX + 2, UINT64_MAX]之间的值，需要把simple_expr类型转换为T_NUMBER
+    //鍦ㄩ潪FAST_PARSER鍦烘櫙涓紝澶勪簬[INT64_MAX + 1, UINT64_MAX]涔嬮棿鐨勬暣鏁伴兘琚В鏋愪负UINT64
+    // 鍦╯imple expr鏄竴涓猅_UINT64涓斿€兼槸'INT64_MAX + 1'鏃讹紝闇€瑕佸皢
+    // '-'鍜?INT64_MAX + 1'鎵撳寘鍦ㄤ竴璧蜂綔涓轰竴涓猅_INT鐨勫父閲忚妭鐐癸紝鍥犱负'-' 'INT64_MAX + 1' = 'INT64_MIN'
+    // 浣嗘槸瀵逛簬-(INT64_MAX + 1)锛岀敱浜庤瘝娉曚笉鑳界煡閬撹繖鏁翠綋鏄竴涓暣鏁帮紝鍙兘寰楀埌-(?)
+    // 鎵€浠ョ敓鎴怤EG T_NUMBER銆?-(INT64_MAX + 1)鏃讹紝琛ㄨ揪寮忕殑is_assigned_from_child_涓?
+    //瀵逛簬[INT64_MAX + 2, UINT64_MAX]涔嬮棿鐨勫€硷紝闇€瑕佹妸simple_expr绫诲瀷杞崲涓篢_NUMBER
     uint64_t value = $2->value_;
     int64_t pos = 0;
     for (; pos < $2->str_len_ && ISSPACE($2->str_value_[pos]); pos++);
@@ -1779,7 +1779,7 @@ expr AND expr %prec AND
   $$ = $1;
   const char *str = $$->str_value_;
   if (T_VARCHAR == $$->type_ && 0 == $$->str_len_) {
-    //空串不做拷贝
+    //绌轰覆涓嶅仛鎷疯礉
   } else if (NULL == str && result->pl_parse_info_.is_pl_parse_) {
     dup_expr_string($$, result, @1.first_column, @1.last_column);
   }
@@ -2880,7 +2880,7 @@ MOD '(' expr ',' expr ')'
   ParseNode *null_node2 = NULL;
   ParseNode *null_node3 = NULL;
   ParseNode *null_node4 = NULL;
-  //以下null_node只负责占坑，resolve阶段会填充具体的内容
+  //浠ヤ笅null_node鍙礋璐ｅ崰鍧戯紝resolve闃舵浼氬～鍏呭叿浣撶殑鍐呭
   malloc_terminal_node(null_node1, result->malloc_pool_, T_NULL);
   null_node1->is_hidden_const_ = 1;
   malloc_terminal_node(null_node2, result->malloc_pool_, T_NULL);
@@ -4436,7 +4436,7 @@ DIFF TABLE relation_factor AGAINST relation_factor
 merge_table_stmt:
 MERGE TABLE relation_factor INTO relation_factor
 {
-  /* MERGE TABLE incoming INTO current — default STRATEGY FAIL (0) */
+  /* MERGE TABLE incoming INTO current 鈥?default STRATEGY FAIL (0) */
   ParseNode *strategy_node = NULL;
   malloc_terminal_node(strategy_node, result->malloc_pool_, T_INT);
   strategy_node->value_ = 0;
@@ -4468,7 +4468,7 @@ MERGE TABLE relation_factor INTO relation_factor
 /*****************************************************************************
  *
  *	create table grammar
- *  查询建表的语法有些啰嗦, 但为了消除移进规约冲突, 目前没想到别的方法...
+ *  鏌ヨ寤鸿〃鐨勮娉曟湁浜涘暟鍡? 浣嗕负浜嗘秷闄ょЩ杩涜绾﹀啿绐? 鐩墠娌℃兂鍒板埆鐨勬柟娉?..
  *****************************************************************************/
 
 create_table_stmt:
@@ -5005,8 +5005,8 @@ VIRTUAL
 }
 ;
 
-/* 用于insert列列表，column_list，update的assignment等 */
-/* 相比于column_ref，不包含collate等表达式中出现时候可以使用的语法 */
+/* 鐢ㄤ簬insert鍒楀垪琛紝column_list锛寀pdate鐨刟ssignment绛?*/
+/* 鐩告瘮浜巆olumn_ref锛屼笉鍖呭惈collate绛夎〃杈惧紡涓嚭鐜版椂鍊欏彲浠ヤ娇鐢ㄧ殑璇硶 */
 column_definition_ref:
 column_name
 {
@@ -5072,7 +5072,7 @@ BINARY opt_string_length_i_v2
   $$->int16_values_[OB_NODE_CAST_TYPE_IDX] = T_CHAR;//to keep consitent with mysql
   $$->int16_values_[OB_NODE_CAST_COLL_IDX] = INVALID_COLLATION;        /* is char */
   $$->int32_values_[OB_NODE_CAST_C_LEN_IDX] = $2[0];        /* length */
-  $$->param_num_ = $2[1]; /* opt_binary的常数个数一定为0 */
+  $$->param_num_ = $2[1]; /* opt_binary鐨勫父鏁颁釜鏁颁竴瀹氫负0 */
   $$->sql_str_off_ = @1.first_column;
 }
 | CHARACTER opt_string_length_i_v2 charset_key charset_name
@@ -5922,7 +5922,7 @@ opt_cast_float_precision:
 string_length_i:
 '(' number_literal ')'
 {
-  // 在 `*` 处报语法错误
+  // 鍦?`*` 澶勬姤璇硶閿欒
   // select cast('' as BINARY(-1));
   //                          *
   // select cast('' as CHARACTER(-1));
@@ -7403,7 +7403,7 @@ create_with_opt_hint opt_replace opt_algorithm opt_definer opt_sql_security VIEW
   dup_expr_string($10, result, @10.first_column, @10.last_column);
   $$->reserved_ = 0; /* is create view */
 }
-// alter view 功能类似于 create or replace view，代码基本可以直接复用，区别仅有在原有视图不存在时需要报错
+// alter view 鍔熻兘绫讳技浜?create or replace view锛屼唬鐮佸熀鏈彲浠ョ洿鎺ュ鐢紝鍖哄埆浠呮湁鍦ㄥ師鏈夎鍥句笉瀛樺湪鏃堕渶瑕佹姤閿?
 | alter_with_opt_hint opt_algorithm opt_definer opt_sql_security VIEW view_name opt_column_list AS view_select_stmt opt_check_option
 {
   (void)($1);
@@ -12195,7 +12195,7 @@ create_with_opt_hint opt_replace outline_type OUTLINE relation_name ON STRING_VA
 {
   ParseNode *name_node = NULL;
   (void)($1);
-  malloc_non_terminal_node(name_node, result->malloc_pool_, T_RELATION_FACTOR, 2, NULL, $5); //前面一个null表示database name
+  malloc_non_terminal_node(name_node, result->malloc_pool_, T_RELATION_FACTOR, 2, NULL, $5); //鍓嶉潰涓€涓猲ull琛ㄧずdatabase name
   ParseNode *flag_node = new_terminal_node(result->malloc_pool_, T_DEFAULT);
   flag_node->value_ = 2;
 
@@ -14765,7 +14765,7 @@ DEFAULT { $$ = NULL; }
 | EXCLUSIVE { $$ = NULL; }
 ;
 
-// mysql 模式下的 constraint 特指 check constraint
+// mysql 妯″紡涓嬬殑 constraint 鐗规寚 check constraint
 alter_constraint_option:
 DROP CONSTRAINT '(' name_list ')'
 {
@@ -16684,7 +16684,7 @@ file_table_param
 | file_table_param_list ',' file_table_param
 {
   $$ = $1;
-  $$->num_child_val_++;
+  $$->num_child_++;
   malloc_new_node_child($$, result->malloc_pool_, $3);
 }
 ;
@@ -18308,8 +18308,8 @@ unreserved_keyword_ambiguous_roles:
 |       SHUTDOWN
 ;
 
-/*注释掉的关键字有规约冲突暂时注释了,都是一些sql中常用的关键字,后面按需打开,增加这块代码逻辑是为了支持在mysql中允许以
-  表名+列名的方式使用关键字，比如"select key.key from test.key"(
+/*娉ㄩ噴鎺夌殑鍏抽敭瀛楁湁瑙勭害鍐茬獊鏆傛椂娉ㄩ噴浜?閮芥槸涓€浜泂ql涓父鐢ㄧ殑鍏抽敭瀛?鍚庨潰鎸夐渶鎵撳紑,澧炲姞杩欏潡浠ｇ爜閫昏緫鏄负浜嗘敮鎸佸湪mysql涓厑璁镐互
+  琛ㄥ悕+鍒楀悕鐨勬柟寮忎娇鐢ㄥ叧閿瓧锛屾瘮濡?select key.key from test.key"(
 */
 mysql_reserved_keyword:
 ACCESSIBLE
@@ -18559,7 +18559,7 @@ void yyerror(void *yylloc, ParseResult *p, char *s, ...)
   }
 }
 
-/* 用于将一条多语句SQL按照分号切分成多个独立SQL */
+/* 鐢ㄤ簬灏嗕竴鏉″璇彞SQL鎸夌収鍒嗗彿鍒囧垎鎴愬涓嫭绔婼QL */
 int obsql_mysql_multi_fast_parse(ParseResult *p)
 {
   int ret = 0;
@@ -18789,7 +18789,7 @@ int obsql_mysql_fast_parse(ParseResult *p)
           break;
         }
         default: {
-          //将匹配的内容直接拷贝
+          //灏嗗尮閰嶇殑鍐呭鐩存帴鎷疯礉
           if (p->is_ignore_token_) {
             if (SELECT_HINT_BEGIN == token ||
                 UPDATE_HINT_BEGIN == token ||
