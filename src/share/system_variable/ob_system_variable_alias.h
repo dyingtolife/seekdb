@@ -154,7 +154,6 @@ namespace share
   static const char* const OB_SV_DEFAULT_PASSWORD_LIFETIME = "default_password_lifetime";
   static const char* const OB_SV__ENABLE_PARALLEL_DML = "_enable_parallel_dml";
   static const char* const OB_SV_SECURE_FILE_PRIV = "secure_file_priv";
-static const char* const OB_SV_ENABLE_FILE_SQL = "enable_file_sql";
   static const char* const OB_SV__ENABLE_PARALLEL_QUERY = "_enable_parallel_query";
   static const char* const OB_SV__FORCE_PARALLEL_QUERY_DOP = "_force_parallel_query_dop";
   static const char* const OB_SV__FORCE_PARALLEL_DML_DOP = "_force_parallel_dml_dop";
@@ -740,6 +739,7 @@ static const char* const OB_SV_ENABLE_FILE_SQL = "enable_file_sql";
   static const char* const OB_SV_HNSW_EXTRA_INFO_MAX_SIZE = "ob_hnsw_extra_info_max_size";
   static const char* const OB_SV__PUSH_JOIN_PREDICATE = "_push_join_predicate";
   static const char* const OB_SV_SPARSE_DROP_RATIO_SEARCH = "ob_sparse_drop_ratio_search";
+  static const char* const OB_SV_ENABLE_FILE_SQL = "enable_file_sql";
 
 }
 }
