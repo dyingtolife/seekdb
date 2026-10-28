@@ -19,7 +19,7 @@
 #include "ob_file_scan_utils.h"
 #include "lib/string/ob_string_buffer.h"
 #include "common/json_type/ob_json_common.h"
-#include "lib/alloc/ob_mod_ids.h"
+#include "lib/utility/ob_mod_define.h"
 
 namespace oceanbase
 {
