@@ -20,6 +20,10 @@
 #include <map>
 #include <set>
 #include <mutex>
+#include <memory>
+#include <new>
+#include <chrono>
+#include <thread>
 #include <vector>
 #include <cstdlib>
 #include <cstdio>
@@ -75,9 +79,16 @@ struct ObCuvsEntry {
   std::vector<float> buf_vecs_; // accumulated vectors (row-major) from add_index
   std::vector<int64_t> buf_ids_;// accumulated external vids from add_index
   size_t built_n_ = 0;          // #vectors present when cuVS was last (re)built
+  // ---- [contest] eager background CAGRA build state (see ob_cuvs_watch_job) ----
+  int64_t last_add_ms_ = 0;     // monotonic ms of the last buffered insert
+  bool watch_inflight_ = false; // a watcher thread is running for this entry
+  bool retired_ = false;        // removed from the registry: the watcher must stop
+  ~ObCuvsEntry() {
+    if (bridge_ != nullptr) { seekdb_cuvs_free(bridge_); bridge_ = nullptr; }
+  }
 };
 static std::mutex g_ob_cuvs_mu;
-static std::map<void *, ObCuvsEntry *> g_ob_cuvs_reg;
+static std::map<void *, std::shared_ptr<ObCuvsEntry>> g_ob_cuvs_reg;
 static std::mutex g_ob_cuvs_marked_mu;
 static std::set<void *> g_ob_cuvs_marked;  // handles of lib=cuvs indexes (marked by the plugin)
 // GPU backend available? (used by the explicit dbms_vector.batch_knn path)
@@ -117,16 +128,140 @@ static inline void ob_vsag_trace(const char *fn, const void *h, long a, long b) 
   (void)fn; (void)h; (void)a; (void)b;
 #endif
 }
+// ==== [contest] eager (background) CAGRA build ==============================
+// The frozen baseline builds the CAGRA graph lazily, on the FIRST knn_search,
+// i.e. strictly after the index DDL has finished.  For lib=cuvs indexes the
+// bulk load is a long CPU-bound VSAG HNSW construction (the CPU shadow that
+// serves filters/deletes/reloads), and the GPU is idle the whole time.  The
+// watcher below moves the CAGRA build into that CPU window: as soon as the
+// buffered vectors stop growing for a short while (OB_CUVS_SETTLE_MS, default
+// 300ms) it builds/refreshes the graph on the GPU while the loader thread is
+// still inserting into VSAG, so the first query finds a ready graph.
+//
+// Safety:
+//  * every build/read of the buffered vectors happens with g_ob_cuvs_mu held,
+//    so a build never observes a reallocated buffer (and a query never reads a
+//    half-built graph);
+//  * serving still requires built_n_ == n (freshness guard in ob_cuvs_job), so
+//    stale graphs are never used for results;
+//  * OB_CUVS_EAGER=0 restores the frozen baseline behaviour exactly.
+static inline bool ob_cuvs_eager_enabled() {
+  static const bool enabled = []() {
+    const char *e = ::getenv("OB_CUVS_EAGER");
+    return !(e != nullptr && e[0] == '0');
+  }();
+  return enabled;
+}
+static inline int64_t ob_cuvs_env_ms(const char *name, int64_t def_val) {
+  const char *e = ::getenv(name);
+  if (e == nullptr || e[0] == '\0') { return def_val; }
+  const int64_t v = ::atoll(e);
+  return v > 0 ? v : def_val;
+}
+static inline int64_t ob_cuvs_now_ms() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+static const size_t OB_CUVS_MIN_PTS = 256;  // CAGRA needs a graph; below this -> VSAG
+// Builds (or refreshes) the CAGRA graph for `ent`.  Caller must hold
+// g_ob_cuvs_mu.  Returns true when a new graph was published.
+static bool ob_cuvs_do_build_locked(ObCuvsEntry &ent) {
+  const size_t n = ent.buf_ids_.size();
+  if (n < OB_CUVS_MIN_PTS || n <= ent.built_n_) { return false; }
+  const int64_t t0 = ob_cuvs_now_ms();
+  void *nb = seekdb_cuvs_build(ent.buf_vecs_.data(), static_cast<long>(n),
+                               static_cast<long>(ent.dim_));
+  if (nb == nullptr) { return false; }
+  if (ent.bridge_ != nullptr) { seekdb_cuvs_free(ent.bridge_); }
+  ent.bridge_ = nb;
+  ent.built_n_ = n;
+  ent.ids_ = ent.buf_ids_;
+  ob_vsag_trace("cuvs_async_build", &ent, static_cast<long>(n),
+                static_cast<long>(ob_cuvs_now_ms() - t0));
+  return true;
+}
+struct ObCuvsWatchArg {
+  std::shared_ptr<ObCuvsEntry> ent;
+};
+// One watcher thread per (re)growing cuVS index.  It exits once the graph covers
+// everything that was buffered and no new vectors arrived for a while, so an
+// idle index does not keep a thread around.
+static void *ob_cuvs_watch_job(void *arg) {
+  ObCuvsWatchArg *watch = static_cast<ObCuvsWatchArg *>(arg);
+  std::shared_ptr<ObCuvsEntry> ent = watch->ent;
+  delete watch;
+  const int64_t settle_ms = ob_cuvs_env_ms("OB_CUVS_SETTLE_MS", 300);
+  const int64_t final_ms = ob_cuvs_env_ms("OB_CUVS_FINAL_MS", 500);
+  bool build_now = false;
+  bool stop = false;
+  while (true) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    build_now = false;
+    stop = false;
+    {
+      std::lock_guard<std::mutex> guard(g_ob_cuvs_mu);
+      if (ent->retired_) {
+        stop = true;
+      } else {
+        const size_t n = ent->buf_ids_.size();
+        const int64_t idle_ms = ob_cuvs_now_ms() - ent->last_add_ms_;
+        if (n >= OB_CUVS_MIN_PTS && n > ent->built_n_) {
+          // Geometric growth is worth a speculative build while loading; the
+          // smaller tail is only built once the loader looks quiescent.
+          const bool geometric = (ent->built_n_ == 0 || n >= ent->built_n_ * 2);
+          if (idle_ms >= (geometric ? settle_ms : final_ms)) { build_now = true; }
+        } else if (idle_ms > final_ms * 4) {
+          stop = true;  // up to date and quiet: nothing left to watch
+        }
+      }
+    }
+    if (build_now) {
+      std::lock_guard<std::mutex> guard(g_ob_cuvs_mu);
+      if (!ent->retired_) { ob_cuvs_do_build_locked(*ent); }
+    } else if (stop) {
+      break;
+    }
+  }
+  {
+    std::lock_guard<std::mutex> guard(g_ob_cuvs_mu);
+    ent->watch_inflight_ = false;
+  }
+  return nullptr;
+}
+// Caller must hold g_ob_cuvs_mu.
+static void ob_cuvs_start_watcher(const std::shared_ptr<ObCuvsEntry> &ent) {
+  if (ent == nullptr || ent->watch_inflight_ || ent->retired_) { return; }
+  ObCuvsWatchArg *arg = new (std::nothrow) ObCuvsWatchArg();
+  if (arg == nullptr) { return; }
+  arg->ent = ent;
+  ent->watch_inflight_ = true;
+  pthread_t tid;
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  // cuVS needs a stack far larger than an OB worker thread's (~1.5MB).
+  pthread_attr_setstacksize(&attr, 32UL * 1024 * 1024);
+  if (pthread_create(&tid, &attr, ob_cuvs_watch_job, arg) == 0) {
+    pthread_detach(tid);
+  } else {
+    delete arg;
+    ent->watch_inflight_ = false;
+  }
+  pthread_attr_destroy(&attr);
+}
+// ==== end contest eager build ==============================================
 static void ob_cuvs_register(void *key, const float *vectors, const int64_t *ids,
                              int dim, int size) {
   void *bridge = seekdb_cuvs_build(vectors, size, dim);
   if (bridge == nullptr) { return; }
-  ObCuvsEntry *ent = new ObCuvsEntry();
-  ent->bridge_ = bridge; ent->dim_ = dim; ent->ids_.assign(ids, ids + size);
+  std::shared_ptr<ObCuvsEntry> ent = std::make_shared<ObCuvsEntry>();
+  ent->bridge_ = bridge;
+  ent->dim_ = dim;
+  ent->ids_.assign(ids, ids + size);
+  // NB: built_n_ intentionally stays 0, exactly like the frozen baseline: this
+  // bulk entry has no host buffer, so the freshness guard (built_n_ ==
+  // buf_ids_.size()) keeps matching the registered graph.
   std::lock_guard<std::mutex> guard(g_ob_cuvs_mu);
-  ObCuvsEntry *&slot = g_ob_cuvs_reg[key];
-  if (slot != nullptr) { seekdb_cuvs_free(slot->bridge_); delete slot; }
-  slot = ent;
+  g_ob_cuvs_reg[key] = ent;
 }
 // Buffer vectors arriving via add_index. Plain HNSW builds BOTH its delta and its
 // snapshot incrementally via add_index (one row at a time), so this is where the
@@ -135,22 +270,49 @@ static void ob_cuvs_add(void *key, const float *vectors, const int64_t *ids,
                         int dim, int size) {
   if (vectors == nullptr || ids == nullptr || dim <= 0 || size <= 0) { return; }
   std::lock_guard<std::mutex> guard(g_ob_cuvs_mu);
-  ObCuvsEntry *&slot = g_ob_cuvs_reg[key];
-  if (slot == nullptr) { slot = new ObCuvsEntry(); slot->dim_ = dim; }
+  std::shared_ptr<ObCuvsEntry> &slot = g_ob_cuvs_reg[key];
+  if (slot == nullptr) { slot = std::make_shared<ObCuvsEntry>(); }
   if (slot->dim_ == 0) { slot->dim_ = dim; }
   if (slot->dim_ != dim) { return; }
-  slot->buf_vecs_.insert(slot->buf_vecs_.end(), vectors,
-                         vectors + static_cast<size_t>(dim) * size);
+  // Reserve geometrically.  The baseline relies on vector::insert growth, which
+  // reallocates and copies the whole accumulated table O(log n) times; for a
+  // 1M x 768 float32 index that is several GB of extra host memcpy traffic
+  // inside the timed build window.
+  const size_t add_vecs = static_cast<size_t>(dim) * static_cast<size_t>(size);
+  const size_t need_vecs = slot->buf_vecs_.size() + add_vecs;
+  if (slot->buf_vecs_.capacity() < need_vecs) {
+    size_t target = slot->buf_vecs_.capacity() * 2;
+    if (target < need_vecs) { target = need_vecs; }
+    slot->buf_vecs_.reserve(target);
+  }
+  const size_t need_ids = slot->buf_ids_.size() + static_cast<size_t>(size);
+  if (slot->buf_ids_.capacity() < need_ids) {
+    size_t target = slot->buf_ids_.capacity() * 2;
+    if (target < need_ids) { target = need_ids; }
+    slot->buf_ids_.reserve(target);
+  }
+  slot->buf_vecs_.insert(slot->buf_vecs_.end(), vectors, vectors + add_vecs);
   slot->buf_ids_.insert(slot->buf_ids_.end(), ids, ids + size);
+  slot->last_add_ms_ = ob_cuvs_now_ms();
+  if (ob_cuvs_eager_enabled() && slot->buf_ids_.size() >= OB_CUVS_MIN_PTS
+      && (slot->built_n_ == 0 || slot->buf_ids_.size() >= slot->built_n_ * 2)) {
+    ob_cuvs_start_watcher(slot);
+  }
 }
 static void ob_cuvs_erase(void *key) {
   { std::lock_guard<std::mutex> mg(g_ob_cuvs_marked_mu); g_ob_cuvs_marked.erase(key); }
-  std::lock_guard<std::mutex> guard(g_ob_cuvs_mu);
-  auto it = g_ob_cuvs_reg.find(key);
-  if (it != g_ob_cuvs_reg.end()) {
-    if (it->second->bridge_) { seekdb_cuvs_free(it->second->bridge_); }
-    delete it->second; g_ob_cuvs_reg.erase(it);
+  std::shared_ptr<ObCuvsEntry> keeping_alive;
+  {
+    std::lock_guard<std::mutex> guard(g_ob_cuvs_mu);
+    auto it = g_ob_cuvs_reg.find(key);
+    if (it != g_ob_cuvs_reg.end()) {
+      it->second->retired_ = true;
+      keeping_alive = it->second;
+      g_ob_cuvs_reg.erase(it);
+    }
   }
+  // If a watcher still references the entry it is destroyed in that thread after
+  // it notices retired_, which keeps the GPU teardown off this caller's path.
 }
 struct ObCuvsJob {
   ObCuvsEntry *ent; const float *query; int64_t topk; int dim; size_t n;
@@ -224,8 +386,6 @@ static void *ob_cuvs_raw_batch_job(void *arg) {
   return nullptr;
 }
 
-static const size_t OB_CUVS_MIN_PTS = 256;  // CAGRA needs a graph; below this -> VSAG
-
 static bool ob_cuvs_try_search(void *key, vsag::Allocator *alloc,
                                const float *query, int /*dim*/, int64_t topk,
                                const float *&dist, const int64_t *&ids,
@@ -234,16 +394,18 @@ static bool ob_cuvs_try_search(void *key, vsag::Allocator *alloc,
   std::lock_guard<std::mutex> guard(g_ob_cuvs_mu);
   auto it = g_ob_cuvs_reg.find(key);
   if (it == g_ob_cuvs_reg.end()) { return false; }
-  ObCuvsEntry *ent = it->second;
+  std::shared_ptr<ObCuvsEntry> ent = it->second;
   // Lazily (re)build the GPU CAGRA index when there are enough points and either
   // nothing is built yet or the buffer grew materially (>=2x). Build+search run on
-  // a 32MB-stack pthread (cuVS overflows the OB worker stack otherwise).
+  // a 32MB-stack pthread (cuVS overflows the OB worker stack otherwise).  With the
+  // eager watcher enabled this is only the last-resort path: the graph is usually
+  // already published before the first query arrives.
   const size_t n = ent->buf_ids_.size();
   const bool need_build =
       (n >= OB_CUVS_MIN_PTS && (ent->bridge_ == nullptr || n >= ent->built_n_ * 2));
   std::vector<unsigned> off(topk);
   std::vector<float> dst(topk);
-  ObCuvsJob job{ent, query, topk, static_cast<int>(ent->dim_), n, need_build, &off, &dst, -1, false};
+  ObCuvsJob job{ent.get(), query, topk, static_cast<int>(ent->dim_), n, need_build, &off, &dst, -1, false};
   pthread_t tid; pthread_attr_t attr; pthread_attr_init(&attr);
   pthread_attr_setstacksize(&attr, 32UL * 1024 * 1024);
   if (pthread_create(&tid, &attr, ob_cuvs_job, &job) == 0) { pthread_join(tid, nullptr); }
@@ -1747,13 +1909,13 @@ long cuvs_knn_search_batch(void *key, const float *queries, long nq, long topk,
   std::lock_guard<std::mutex> guard(g_ob_cuvs_mu);
   auto it = g_ob_cuvs_reg.find(key);
   if (it == g_ob_cuvs_reg.end()) { return 0; }
-  ObCuvsEntry *ent = it->second;
+  std::shared_ptr<ObCuvsEntry> ent = it->second;
   const size_t n = ent->buf_ids_.size();
   const bool need_build =
       (n >= OB_CUVS_MIN_PTS && (ent->bridge_ == nullptr || n >= ent->built_n_ * 2));
   std::vector<unsigned> off(static_cast<size_t>(nq) * topk);
   std::vector<float> dst(static_cast<size_t>(nq) * topk);
-  ObCuvsBatchJob job{ent, queries, nq, topk, n, need_build,
+  ObCuvsBatchJob job{ent.get(), queries, nq, topk, n, need_build,
                      off.data(), dst.data(), 0, false};
   pthread_t tid; pthread_attr_t attr; pthread_attr_init(&attr);
   pthread_attr_setstacksize(&attr, 32UL * 1024 * 1024);
