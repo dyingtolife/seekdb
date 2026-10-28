@@ -12976,9 +12976,6 @@ int ObDMLResolver::parse_int64_strict(const ObString &s, int64_t &v)
 static int collect_glob_matches_impl(const ObString &pattern, ObIAllocator &allocator, ObArray<ObFileRow> &rows);
 static int parquet_plain_to_text_rows_impl(const ObMiniParquetReader::ReadResult &rr,
                                            ObIAllocator &allocator, ObArray<ObFileRow> &rows);
-static int gen_values_table_column_items_with_names_impl(
-    const ObFileSchema &schema, const ObIArray<ObRawExprResType> &res_types, TableItem &table_item);
-
 int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableItem *&table_item)
 {
   int ret = OB_SUCCESS;
@@ -13278,7 +13275,7 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableIte
     new_table_item->type_ = TableItem::VALUES_TABLE;
     new_table_item->is_view_table_ = false;
     if (OB_FAIL(dml_stmt->add_table_item(session_info_, new_table_item))) {
-    } else if (OB_FAIL(gen_values_table_column_items_with_names_impl(
+    } else if (OB_FAIL(gen_values_table_column_items_with_names(
                    schema, col_types, *new_table_item))) {
     } else {
       table_item = new_table_item;
@@ -13392,7 +13389,7 @@ static int parquet_plain_to_text_rows_impl(const ObMiniParquetReader::ReadResult
   }
   return ret;
 }
-static int gen_values_table_column_items_with_names_impl(
+int ObDMLResolver::gen_values_table_column_items_with_names(
     const ObFileSchema &schema, const ObIArray<ObRawExprResType> &res_types, TableItem &table_item)
 {
   int ret = OB_SUCCESS;

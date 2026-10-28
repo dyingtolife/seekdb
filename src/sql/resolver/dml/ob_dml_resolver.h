@@ -27,6 +27,7 @@ namespace oceanbase
 {
 namespace sql
 {
+struct ObFileSchema;
 class ObEqualAnalysis;
 class ObChildStmtResolver;
 class ObDelUpdStmt;
@@ -781,6 +782,7 @@ private:
   int resolve_file_table_item(const ParseNode &table_node, TableItem *&table_item);
   int read_local_file(const ObString &path, ObIAllocator &allocator, char *&buf, int64_t &len);
   static int parse_int64_strict(const ObString &s, int64_t &v);
+  int gen_values_table_column_items_with_names(const ObFileSchema &schema, const ObIArray<ObRawExprResType> &res_types, TableItem &table_item);
   int resolve_values_table_for_select(const ParseNode &table_node,
                                       ObValuesTableDef &table_values);
   int resolve_values_table_for_insert(const ParseNode &table_node,
