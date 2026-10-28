@@ -20,6 +20,9 @@ OUTPUT=${1:-$SCRIPT_DIR/libseekdb_cuvs_bridge.so}
 
 mkdir -p "$(dirname "$OUTPUT")"
 
+# The bridge resolves the optional cuVS CAGRA build-parameter setters with
+# dlsym() (see seekdb_cuvs_bridge.c), so it needs libdl on glibc < 2.34 and
+# pthread for the per-index search scratch pool.
 "$HIPCC" \
   -shared \
   -fPIC \
@@ -32,6 +35,8 @@ mkdir -p "$(dirname "$OUTPUT")"
   -Wl,-soname,libseekdb_cuvs_bridge.so \
   -Wl,-rpath,"$HIPVS_ROOT/lib:$ROCM_ROOT/lib" \
   -lcuvs_c \
+  -ldl \
+  -lpthread \
   -o "$OUTPUT"
 
 echo "built $OUTPUT"
