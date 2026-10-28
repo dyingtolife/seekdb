@@ -28,7 +28,9 @@
 #include "sql/engine/file/ob_file_scan_utils.h"
 #include "sql/engine/file/ob_parquet_reader.h"
 #include "sql/resolver/ob_resolver_utils.h"
-#include "common/time/ob_time_utility.h"
+#include "common/timezone/ob_time_convert.h"
+#include <dirent.h>
+#include <stdlib.h>
 #include "sql/printer/ob_select_stmt_printer.h"
 #include "sql/engine/expr/ob_expr_autoinc_nextval.h"
 #include "sql/engine/expr/ob_expr_column_conv.h"
@@ -1408,7 +1410,7 @@ int ObDMLResolver::resolve_into_variables(const ParseNode *node,
             OZ (pl_vars.push_back(expr));
           } else {
             /*
-             * Directly execute select 1 into a in sql; mysql will report 鈥淓RROR 1327 (42000): Undeclared variable: a鈥?
+             * Directly execute select 1 into a in sql; mysql will report 閳ユ窊RROR 1327 (42000): Undeclared variable: a閳?
              * */
             ret = OB_ERR_SP_UNDECLARED_VAR;
             LOG_USER_ERROR(OB_ERR_SP_UNDECLARED_VAR, static_cast<int>(ch_node->str_len_), ch_node->str_value_);
@@ -8480,7 +8482,7 @@ int ObDMLResolver::get_all_column_ref(ObRawExpr *expr, ObIArray<ObColumnRefRawEx
  * create table t1(SYSTIMESTAMP int) partition by range(SYSTIMESTAMP) (partition "p0" values less than 10000);
  * select SYSTIMESTAMP from dual; ==> select "SYSTIMESTAMP" from dual;
  * Only in this way can the part expr be truly reparsed, otherwise it will be misparsed as a function, essentially here it represents an ordinary column property, currently known keywords are:
- * SYSTIMESTAMP銆丆URRENT_DATE銆丩OCALTIMESTAMP銆丆URRENT_TIMESTAMP銆丼ESSIONTIMEZONE銆丏BTIMEZONE銆?
+ * SYSTIMESTAMP閵嗕竼URRENT_DATE閵嗕俯OCALTIMESTAMP閵嗕竼URRENT_TIMESTAMP閵嗕讣ESSIONTIMEZONE閵嗕笍BTIMEZONE閵?
  * bug:
  */
 
@@ -13065,29 +13067,31 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableIte
                 break;
               }
               case ObFileColumnType::DOUBLE: {
-                double v = 0;
-                char *endp = NULL;
-                v = ObCharset::strtod(text.ptr(), &endp);
-                op.set_double(v);
+                char *ntext = static_cast<char *>(allocator_->alloc(text.length() + 1));
+                if (OB_ISNULL(ntext)) {
+                  ret = OB_ALLOCATE_MEMORY_FAILED;
+                } else {
+                  MEMCPY(ntext, text.ptr(), text.length());
+                  ntext[text.length()] = '\0';
+                  op.set_double(strtod(ntext, NULL));
+                }
                 break;
               }
               case ObFileColumnType::DATE: {
-                int64_t v = 0;
-                ObDateValue date_val;
-                if (OB_FAIL(ObTimeConverter::str_to_date(text, date_val))) {
+                int32_t v = 0;
+                if (OB_FAIL(ObTimeConverter::str_to_date(text, v))) {
                   op.set_null();
                 } else {
-                  op.set_date(date_val.date_int());
+                  op.set_date(v);
                 }
                 break;
               }
               case ObFileColumnType::DATETIME: {
                 int64_t v = 0;
-                ObTime ot;
-                if (OB_FAIL(ObTimeConverter::str_to_ob_time(text, ot, false))) {
+                ObTimeConvertCtx cvrt_ctx(NULL, false, false);
+                if (OB_FAIL(ObTimeConverter::str_to_datetime(text, cvrt_ctx, v))) {
                   op.set_null();
                 } else {
-                  ObTimeConverter::ob_time_to_datetime(ot, v);
                   op.set_datetime(v);
                 }
                 break;
