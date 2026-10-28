@@ -12833,7 +12833,11 @@ int ObDMLResolver::check_need_fill_embedded_vec_expr_param(const ObDMLStmt &stmt
   return ret;
 }
 
-}  // namespace sql
+static int collect_glob_matches_impl(const ObString &pattern, ObIAllocator &allocator, ObArray<ObFileRow> &rows);
+static int parquet_plain_to_text_rows_impl(const ObMiniParquetReader::ReadResult &rr,
+                                           ObIAllocator &allocator, ObArray<ObFileRow> &rows);
+static int gen_values_table_column_items_with_names_impl(
+    const ObFileSchema &schema, const ObIArray<ObRawExprResType> &res_types, TableItem &table_item);
 
 int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableItem *&table_item)
 {
@@ -12885,7 +12889,7 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableIte
     ObString secure_dir;
     if (OB_FAIL(session_info_->get_secure_file_priv(secure_dir))) {
       LOG_WARN("failed to read secure_file_priv", K(ret));
-    } else if (OB_FAIL(ObResolverUtils::check_secure_file_priv(path_str, secure_dir))) {
+    } else if (OB_FAIL(ObResolverUtils::check_secure_path(path_str, secure_dir))) {
       LOG_USER_ERROR(OB_INVALID_ARGUMENT, "file path is outside secure_file_priv");
     }
   }
@@ -12940,7 +12944,7 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableIte
       while (OB_SUCC(ret)) {
         int gr = cursor.next_row(r);
         if (OB_ITER_END == gr) { break; }
-        else if (OB_SUCCESS != gr) { ret = gr; LOG_WARN("bad jsonl row", K(cursor.current_line())); }
+        else if (OB_SUCCESS != gr) { ret = gr; LOG_WARN("bad jsonl row", K(r)); }
         else {
           // r.cells_ holds [k1, v1, k2, v2, ...]
           for (int64_t i = 0; OB_SUCC(ret) && i + 1 < r.cells_.count(); i += 2) {
@@ -13421,4 +13425,6 @@ static int gen_values_table_column_items_with_names_impl(
   }
   return ret;
 }
+}  // namespace sql
+
 }  // namespace oceanbase
