@@ -16683,9 +16683,7 @@ file_table_param
 }
 | file_table_param_list ',' file_table_param
 {
-  $$ = $1;
-  $$->num_child_++;
-  malloc_new_node_child($$, result->malloc_pool_, $3);
+  merge_nodes($$, result, T_EXPR_LIST, $3);
 }
 ;
 
