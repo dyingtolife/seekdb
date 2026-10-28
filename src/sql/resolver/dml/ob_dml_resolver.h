@@ -17,8 +17,6 @@
 #ifndef OCEANBASE_SQL_RESOLVER_DML_OB_DML_RESOLVER_H_
 #define OCEANBASE_SQL_RESOLVER_DML_OB_DML_RESOLVER_H_
 #include "sql/resolver/dml/ob_dml_stmt.h"
-#include "sql/engine/file/ob_file_scan_utils.h"
-#include "sql/engine/file/ob_parquet_reader.h"
 #include "sql/resolver/dml/ob_column_namespace_checker.h"
 #include "sql/resolver/ob_stmt_resolver.h"
 #include "sql/resolver/expr/ob_raw_expr_resolver_impl.h"
@@ -782,10 +780,7 @@ private:
   int resolve_values_table_item(const ParseNode &table_node, TableItem *&table_item);
   int resolve_file_table_item(const ParseNode &table_node, TableItem *&table_item);
   int read_local_file(const ObString &path, ObIAllocator &allocator, char *&buf, int64_t &len);
-  int collect_glob_matches(const ObString &pattern, ObIAllocator &allocator, ObArray<ObFileRow> &rows);
-  int parquet_plain_to_text_rows(const ObMiniParquetReader::ReadResult &rr, ObIAllocator &allocator, ObArray<ObFileRow> &rows);
   static int parse_int64_strict(const ObString &s, int64_t &v);
-  int gen_values_table_column_items_with_names(const ObFileSchema &schema, const ObIArray<ObRawExprResType> &res_types, TableItem &table_item);
   int resolve_values_table_for_select(const ParseNode &table_node,
                                       ObValuesTableDef &table_values);
   int resolve_values_table_for_insert(const ParseNode &table_node,

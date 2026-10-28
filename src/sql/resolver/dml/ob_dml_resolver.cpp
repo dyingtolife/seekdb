@@ -12913,7 +12913,7 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableIte
       col.type_ = ObFileColumnType::VARCHAR;
       col.nullable_ = false;
       if (OB_FAIL(schema.columns_.push_back(col))) {
-      } else if (OB_FAIL(collect_glob_matches(path_str, *allocator_, rows))) {
+      } else if (OB_FAIL(collect_glob_matches_impl(path_str, *allocator_, rows))) {
       }
     }
   } else {
@@ -12972,7 +12972,7 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableIte
         }
         // convert plain columns to text rows for the shared path below
         if (OB_SUCC(ret)) {
-          ret = parquet_plain_to_text_rows(rr, *allocator_, rows);
+          ret = parquet_plain_to_text_rows_impl(rr, *allocator_, rows);
         }
       }
     } else {
@@ -13207,7 +13207,7 @@ static bool glob_match_impl(const char *pat, int64_t plen, const char *str, int6
   return p == plen;
 }
 
-int ObDMLResolver::collect_glob_matches(const ObString &pattern, ObIAllocator &allocator, ObArray<ObFileRow> &rows)
+static int collect_glob_matches_impl(const ObString &pattern, ObIAllocator &allocator, ObArray<ObFileRow> &rows)
 {
   int ret = OB_SUCCESS;
   ObString dir, pat;
@@ -13335,7 +13335,7 @@ static int file_cell_text_from_plain(const ObMiniParquetReader::ColumnChunkData 
   return ret;
 }
 
-int ObDMLResolver::parquet_plain_to_text_rows(const ObMiniParquetReader::ReadResult &rr,
+static int parquet_plain_to_text_rows_impl(const ObMiniParquetReader::ReadResult &rr,
                                               ObIAllocator &allocator, ObArray<ObFileRow> &rows)
 {
   int ret = OB_SUCCESS;
@@ -13380,7 +13380,7 @@ int ObDMLResolver::parse_int64_strict(const ObString &s, int64_t &v)
   return ret;
 }
 
-int ObDMLResolver::gen_values_table_column_items_with_names(
+static int gen_values_table_column_items_with_names_impl(
     const ObFileSchema &schema, const ObIArray<ObRawExprResType> &res_types, TableItem &table_item)
 {
   int ret = OB_SUCCESS;
