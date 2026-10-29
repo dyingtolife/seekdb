@@ -291,7 +291,7 @@ int ObAiColumnDMLUtils::check_no_direct_assignment(
 }
 
 int ObAiColumnDMLUtils::check_strict_read_for_stmt(
-    oceanbase::stmt::ObStmt &basic_stmt,
+    ObStmt &basic_stmt,
     sql::ObSQLSessionInfo *session)
 {
   int ret = OB_SUCCESS;
@@ -304,8 +304,7 @@ int ObAiColumnDMLUtils::check_strict_read_for_stmt(
     } else if (!basic_stmt.is_dml_stmt()) {
       // only SELECT/UPDATE/DELETE (+their EXPLAIN) go through the check
     } else {
-      oceanbase::stmt::ObDMLStmt *dml_stmt =
-          static_cast<oceanbase::stmt::ObDMLStmt *>(&basic_stmt);
+      ObDMLStmt *dml_stmt = static_cast<ObDMLStmt *>(&basic_stmt);
       ObSchemaGetterGuard &guard = session->get_schema_guard();
       ObSQLSessionInfo *my_session = session;
       // Collect distinct (table_id, ai state/result col ids) referenced by

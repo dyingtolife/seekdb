@@ -18,13 +18,10 @@
 
 namespace oceanbase
 {
-namespace stmt
-{
-class ObStmt;
-class ObDMLStmt;
-}
 namespace sql
 {
+
+class ObStmt;
 
 // Per-statement runtime state of the AI column DML linkage. Collected per
 // changed row by the DML row processing hooks; flushed once at the end of
@@ -105,7 +102,7 @@ public:
   // Called from ObSql::generate_physical_plan for DML statements when the
   // session variable ai_column_strict_read is ON.
   static int check_strict_read_for_stmt(
-      oceanbase::stmt::ObStmt &basic_stmt,
+      ObStmt &basic_stmt,
       sql::ObSQLSessionInfo *session);
 
   // RETRY AI COLUMN: select matched rowkeys (status pseudo column maps to
