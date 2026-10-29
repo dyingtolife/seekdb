@@ -31,6 +31,7 @@ using namespace common;
 using namespace share;
 using namespace share::schema;
 using namespace sql;
+using namespace common::sqlclient;
 
 ObAiColumnWorker &ObAiColumnWorker::get_instance()
 {
@@ -127,7 +128,7 @@ int ObAiColumnWorker::execute_task_group(common::ObMySQLProxy &sql_proxy,
                                            task.rowkey_predicate_.length(),
                                            task.rowkey_predicate_.ptr()))) {
       SERVER_LOG(WARN, "build eval sql failed", K(ret));
-    } else if (OB_FAIL(sql_proxy.read(eval_sql.ptr(), res))) {
+    } else if (OB_FAIL(sql_proxy.read(res, eval_sql.ptr()))) {
       SERVER_LOG(WARN, "eval input expr failed", K(ret), "sql", eval_sql.ptr());
     } else if (OB_ISNULL(result = res.get_result())) {
       ret = OB_ERR_UNEXPECTED;
@@ -136,12 +137,14 @@ int ObAiColumnWorker::execute_task_group(common::ObMySQLProxy &sql_proxy,
       // no-op anyway; task row is cleaned by the publish/failure path).
       SERVER_LOG(DEBUG, "ai task row vanished", K(task.task_id_));
       return OB_SUCCESS;
-    } else if (result->is_null("ai_input")) {
-      // NULL dependency value: no input to send; treat as an execution
-      // failure so the bounded retry path records the outcome.
-      ret = OB_ERR_NULL_VALUE;
-      SERVER_LOG(WARN, "ai input evaluated to null", K(task.task_id_));
     } else {
+      ObString probe;
+      if (OB_FAIL(result->get_varchar("ai_input", probe)) || 0 == probe.length()) {
+        // NULL dependency value: no input to send; treat as an execution
+        // failure so the bounded retry path records the outcome.
+        ret = OB_ERR_NULL_VALUE;
+        SERVER_LOG(WARN, "ai input evaluated to null", K(task.task_id_));
+      } else {
       ObString input_value;
       if (OB_FAIL(result->get_varchar("ai_input", input_value))) {
         SERVER_LOG(WARN, "read ai input value failed", K(ret));
@@ -209,6 +212,7 @@ int ObAiColumnWorker::execute_task_group(common::ObMySQLProxy &sql_proxy,
             }
           }
         }
+      }
       }
     }
   }
