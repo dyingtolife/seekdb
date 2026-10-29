@@ -974,13 +974,13 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
               char col_name[OB_MAX_COLUMN_NAME_LENGTH + 1];
               int64_t pos = 0;
               const int64_t name_len = user_name.length();
-              const int64_t suffix_len2 = static_cast<int64_t>(strlen(suffixes[j]));
+              const int64_t suffix_len2 = suffixes[j].length();
               if (name_len + suffix_len2 >= static_cast<int64_t>(sizeof(col_name))) {
                 ret = OB_ERR_UNEXPECTED;
                 SQL_RESV_LOG(WARN, "ai hidden column name too long", K(ret), K(name_len));
               } else {
                 MEMCPY(col_name, user_name.ptr(), name_len);
-                MEMCPY(col_name + name_len, suffixes[j], suffix_len2);
+                MEMCPY(col_name + name_len, suffixes[j].ptr(), suffix_len2);
                 pos = name_len + suffix_len2;
                 col_name[pos] = '\0';
               }
