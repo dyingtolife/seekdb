@@ -224,16 +224,20 @@ int ObAiColumnTaskService::claim_tasks(ObISQLClient &sql_client,
   int ret = OB_SUCCESS;
   tasks.reset();
   // Single worker (single-node seekdb) claims by state transition. The
-  // UPDATE ... WHERE state = PENDING ... then read-back loop is atomic per
-  // statement; concurrent claimants can only lose rows whose state moved.
+  // UPDATE ... WHERE state IN (PENDING, RETRY_WAIT) ... then read-back loop
+  // is atomic per statement; concurrent claimants can only lose rows whose
+  // state moved. RETRY_WAIT rows become claimable once eligible_ts (set to
+  // now() + retry delay by fail_task) passes, which is what makes the
+  // bounded-retry loop actually run.
   ObSqlString claim_sql;
   int64_t affected = 0;
   if (OB_FAIL(claim_sql.assign_fmt(
           "UPDATE %s SET state = %d, gmt_modified = now(6)"
-          " WHERE state = %d AND eligible_ts <= now(6)"
+          " WHERE state IN (%d, %d) AND eligible_ts <= now(6)"
           " ORDER BY task_id ASC LIMIT %ld",
           OB_AI_COLUMN_TASK_TABLE, static_cast<int>(AI_TASK_EXECUTING),
-          static_cast<int>(AI_TASK_PENDING), max_batch))) {
+          static_cast<int>(AI_TASK_PENDING), static_cast<int>(AI_TASK_RETRY_WAIT),
+          max_batch))) {
     SHARE_SCHEMA_LOG(WARN, "build claim sql failed", K(ret));
   } else if (OB_FAIL(exec_write(sql_client, claim_sql, affected))) {
     SHARE_SCHEMA_LOG(WARN, "claim ai tasks failed", K(ret));
