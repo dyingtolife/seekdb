@@ -262,7 +262,7 @@ int ObAiColumnDMLUtils::flush_changes(ObExecContext &exec_ctx,
           ObAiColumnDMLCtx::RowChange &change = ai_ctx.row_changes_.at(i);
           if (change.is_delete_) {
             // DELETE: remove pending tasks for the old rowkey.
-            if (OB_FAIL(task_svc.remove_tasks_for_row(*client, ai_ctx.table_id_,
+            if (OB_FAIL(task_svc.remove_tasks_for_row(client_wrapper, ai_ctx.table_id_,
                                                       change.rowkey_predicate_))) {
               SQL_ENG_LOG(WARN, "remove tasks on delete failed", K(ret));
             }
@@ -270,14 +270,14 @@ int ObAiColumnDMLUtils::flush_changes(ObExecContext &exec_ctx,
             // PK update: rowkey_predicate_ is the OLD key,
             // old_rowkey_predicate_ is the NEW key. Remove old-key tasks,
             // then invalidate+enqueue for the new key.
-            if (OB_FAIL(task_svc.remove_tasks_for_row(*client, ai_ctx.table_id_,
+            if (OB_FAIL(task_svc.remove_tasks_for_row(client_wrapper, ai_ctx.table_id_,
                                                       change.rowkey_predicate_))) {
               SQL_ENG_LOG(WARN, "remove old key tasks failed", K(ret));
-            } else if (OB_FAIL(task_svc.invalidate_row(*client, table_schema,
+            } else if (OB_FAIL(task_svc.invalidate_row(client_wrapper, table_schema,
                                                        change.old_rowkey_predicate_,
                                                        change.request_id_))) {
               SQL_ENG_LOG(WARN, "invalidate new key failed", K(ret));
-            } else if (OB_FAIL(task_svc.enqueue_tasks(*client, table_schema,
+            } else if (OB_FAIL(task_svc.enqueue_tasks(client_wrapper, table_schema,
                                                        OB_INVALID_ID,
                                                        change.old_rowkey_predicate_,
                                                        change.request_id_))) {
@@ -286,11 +286,11 @@ int ObAiColumnDMLUtils::flush_changes(ObExecContext &exec_ctx,
           } else {
             // INSERT or dependency UPDATE: invalidate the hidden columns
             // (result=NULL, state=PENDING, request=rid) then enqueue tasks.
-            if (OB_FAIL(task_svc.invalidate_row(*client, table_schema,
+            if (OB_FAIL(task_svc.invalidate_row(client_wrapper, table_schema,
                                                 change.rowkey_predicate_,
                                                 change.request_id_))) {
               SQL_ENG_LOG(WARN, "invalidate row failed", K(ret));
-            } else if (OB_FAIL(task_svc.enqueue_tasks(*client, table_schema,
+            } else if (OB_FAIL(task_svc.enqueue_tasks(client_wrapper, table_schema,
                                                        OB_INVALID_ID,
                                                        change.rowkey_predicate_,
                                                        change.request_id_))) {
