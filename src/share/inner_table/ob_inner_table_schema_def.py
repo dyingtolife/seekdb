@@ -2485,10 +2485,33 @@ def_table_schema(**gen_history_table_def(1132, all_ai_column_def))
 # AI column background task queue. Workers claim rows, call the model, and
 # publish results into the hidden result columns; test suites assert on the
 # task_count / rowkey_predicate / eligible_ts columns.
+
+
+all_objauth_mysql_def = dict(
+    owner = 'cjl476581',
+    table_name     = '__all_objauth_mysql',
+    table_id       = '1133',
+    table_type = 'SYSTEM_TABLE',
+    gm_columns = ['gmt_create', 'gmt_modified'],
+    rowkey_columns = [
+        ('user_id', 'int'),
+        ('obj_name', 'varchar:OB_MAX_CORE_TALBE_NAME_LENGTH'),
+        ('obj_type', 'int')
+    ],
+    normal_columns = [
+      ('all_priv', 'int', 'false', 0),
+      ('grantor', 'varchar:OB_MAX_USER_NAME_LENGTH_STORE', 'false', ''),
+      ('grantor_host', 'varchar:OB_MAX_HOST_NAME_LENGTH', 'false', '')
+  ]
+  )
+def_table_schema(**all_objauth_mysql_def)
+def_table_schema(**gen_history_table_def(1136, all_objauth_mysql_def))
+
+
 all_ai_column_task_def = dict(
     owner = 'seekdb',
     table_name = '__all_ai_column_task',
-    table_id = '1136',
+    table_id = '1137',
     table_type = 'SYSTEM_TABLE',
     gm_columns = ['gmt_create', 'gmt_modified'],
     rowkey_columns = [
@@ -2511,28 +2534,7 @@ all_ai_column_task_def = dict(
     ]
 )
 def_table_schema(**all_ai_column_task_def)
-def_table_schema(**gen_history_table_def(1137, all_ai_column_task_def))
-
-
-all_objauth_mysql_def = dict(
-    owner = 'cjl476581',
-    table_name     = '__all_objauth_mysql',
-    table_id       = '1133',
-    table_type = 'SYSTEM_TABLE',
-    gm_columns = ['gmt_create', 'gmt_modified'],
-    rowkey_columns = [
-        ('user_id', 'int'),
-        ('obj_name', 'varchar:OB_MAX_CORE_TALBE_NAME_LENGTH'),
-        ('obj_type', 'int')
-    ],
-    normal_columns = [
-      ('all_priv', 'int', 'false', 0),
-      ('grantor', 'varchar:OB_MAX_USER_NAME_LENGTH_STORE', 'false', ''),
-      ('grantor_host', 'varchar:OB_MAX_HOST_NAME_LENGTH', 'false', '')
-  ]
-  )
-def_table_schema(**all_objauth_mysql_def)
-def_table_schema(**gen_history_table_def(1136, all_objauth_mysql_def))
+def_table_schema(**gen_history_table_def(1138, all_ai_column_task_def))
 
 
 # Reserved position (placeholder before this line)
