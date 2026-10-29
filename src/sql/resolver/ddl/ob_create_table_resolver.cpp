@@ -951,9 +951,16 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
             ret = OB_ERR_UNEXPECTED;
             SQL_RESV_LOG(WARN, "ai column user column missing", K(ret), K(ai_col.column_id_));
           } else {
-            const ObString user_name = ai_user_col->get_column_name_str();
+            ObString user_name = ai_user_col->get_column_name_str();
+            // Deep-copy once: the columns array can reallocate when the
+            // hidden columns below are appended, invalidating pointers into
+            // it; user_name must not alias that storage.
+            if (OB_FAIL(ob_write_string(*allocator_, user_name, user_name))) {
+              SQL_RESV_LOG(WARN, "copy ai user column name failed", K(ret));
+            }
             if (OB_ISNULL(ai_col.column_name_.ptr()) || 0 == ai_col.column_name_.length()) {
-              if (OB_FAIL(ob_write_string(*allocator_, user_name, ai_col.column_name_))) {
+              if (OB_FAIL(ob_write_string(*allocator_, ai_user_col->get_column_name_str(),
+                                          ai_col.column_name_))) {
                 SQL_RESV_LOG(WARN, "set ai column name failed", K(ret));
               }
             }
@@ -966,9 +973,18 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
             for (int64_t j = 0; OB_SUCC(ret) && j < 3; ++j) {
               char col_name[OB_MAX_COLUMN_NAME_LENGTH + 1];
               int64_t pos = 0;
-              if (OB_FAIL(databuff_printf(col_name, sizeof(col_name), pos, "%.*s%s",
-                                          user_name.length(), user_name.ptr(),
-                                          suffixes[j]))) {
+              const int64_t name_len = user_name.length();
+              const int64_t suffix_len2 = static_cast<int64_t>(strlen(suffixes[j]));
+              if (name_len + suffix_len2 >= static_cast<int64_t>(sizeof(col_name))) {
+                ret = OB_ERR_UNEXPECTED;
+                SQL_RESV_LOG(WARN, "ai hidden column name too long", K(ret), K(name_len));
+              } else {
+                MEMCPY(col_name, user_name.ptr(), name_len);
+                MEMCPY(col_name + name_len, suffixes[j], suffix_len2);
+                pos = name_len + suffix_len2;
+                col_name[pos] = '\0';
+              }
+              if (OB_FAIL(ret)) {
                 SQL_RESV_LOG(WARN, "build ai hidden column name failed", K(ret));
               } else {
                 ObColumnSchemaV2 hidden_col;
