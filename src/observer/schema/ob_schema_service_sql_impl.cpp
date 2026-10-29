@@ -4930,6 +4930,7 @@ int ObSchemaServiceSQLImpl::fetch_ai_column_info(
       }
     }
   }
+  }
   return ret;
 }
 
