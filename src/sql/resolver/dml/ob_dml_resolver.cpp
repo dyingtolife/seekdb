@@ -1410,7 +1410,7 @@ int ObDMLResolver::resolve_into_variables(const ParseNode *node,
             OZ (pl_vars.push_back(expr));
           } else {
             /*
-             * Directly execute select 1 into a in sql; mysql will report 閳ユ窊RROR 1327 (42000): Undeclared variable: a閳?
+             * Directly execute select 1 into a in sql; mysql will report 闁炽儲绐奟ROR 1327 (42000): Undeclared variable: a闁?
              * */
             ret = OB_ERR_SP_UNDECLARED_VAR;
             LOG_USER_ERROR(OB_ERR_SP_UNDECLARED_VAR, static_cast<int>(ch_node->str_len_), ch_node->str_value_);
@@ -8482,7 +8482,7 @@ int ObDMLResolver::get_all_column_ref(ObRawExpr *expr, ObIArray<ObColumnRefRawEx
  * create table t1(SYSTIMESTAMP int) partition by range(SYSTIMESTAMP) (partition "p0" values less than 10000);
  * select SYSTIMESTAMP from dual; ==> select "SYSTIMESTAMP" from dual;
  * Only in this way can the part expr be truly reparsed, otherwise it will be misparsed as a function, essentially here it represents an ordinary column property, currently known keywords are:
- * SYSTIMESTAMP閵嗕竼URRENT_DATE閵嗕俯OCALTIMESTAMP閵嗕竼URRENT_TIMESTAMP閵嗕讣ESSIONTIMEZONE閵嗕笍BTIMEZONE閵?
+ * SYSTIMESTAMP闁靛棔绔糢RRENT_DATE闁靛棔淇疧CALTIMESTAMP闁靛棔绔糢RRENT_TIMESTAMP闁靛棔璁SSIONTIMEZONE闁靛棔绗岯TIMEZONE闁?
  * bug:
  */
 
@@ -13026,7 +13026,7 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableIte
     ObString secure_dir;
     if (OB_FAIL(session_info_->get_secure_file_priv(secure_dir))) {
       LOG_WARN("failed to read secure_file_priv", K(ret));
-    } else if (OB_FAIL(ObResolverUtils::check_secure_path(path_str, secure_dir))) {
+    } else if (OB_FAIL(ObResolverUtils::check_secure_path(secure_dir, path_str))) {
       LOG_USER_ERROR(OB_INVALID_ARGUMENT, "file path is outside secure_file_priv");
     }
   }
