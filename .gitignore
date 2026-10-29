@@ -264,3 +264,4 @@ seekdb_data/
 
 /deps/android/
 /deps/wasm/
+build_log_*.txt
