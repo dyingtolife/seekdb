@@ -4932,9 +4932,8 @@ int ObSchemaServiceSQLImpl::fetch_ai_column_info(
   }
   return ret;
 }
-  }
 
-
+template <typename T>
 int ObSchemaServiceSQLImpl::fetch_trigger_list(const ObRefreshSchemaStatus &schema_status,
                                                const uint64_t table_id,
                                                const int64_t schema_version,
