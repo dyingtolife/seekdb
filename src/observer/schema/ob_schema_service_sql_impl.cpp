@@ -4832,19 +4832,8 @@ int ObSchemaServiceSQLImpl::fetch_ai_column_info(
     ObTableSchema &table_schema)
 {
   int ret = OB_SUCCESS;
-  // The AI metadata tables carry no AI columns themselves. Fetching AI info
-  // FOR them would query __all_ai_column_history while that very schema (or
-  // the task table's) is being refreshed; the inner query self-blocks the
-  // refresh, leaving half-built schemas (column_cnt=0 with rowkey>0) in the
-  // cache so later reads of those tables fail. Skip them entirely.
-  if (OB_ALL_AI_COLUMN_TID == table_id
-      || OB_ALL_AI_COLUMN_HISTORY_TID == table_id
-      || OB_ALL_AI_COLUMN_TASK_TID == table_id
-      || OB_ALL_AI_COLUMN_TASK_HISTORY_TID == table_id) {
-    // nothing to fetch: the metadata tables have no AI columns
-  } else {
-    ObSqlString sql;
-    SMART_VAR(ObMySQLProxy::MySQLResult, res) {
+  ObSqlString sql;
+  SMART_VAR(ObMySQLProxy::MySQLResult, res) {
     ObMySQLResult *result = NULL;
     const int64_t snapshot_timestamp = schema_status.snapshot_timestamp_;
     DEFINE_SQL_CLIENT_RETRY_WEAK_WITH_SNAPSHOT(sql_client, snapshot_timestamp);
@@ -4940,7 +4929,6 @@ int ObSchemaServiceSQLImpl::fetch_ai_column_info(
         }
       }
     }
-  }
   }
   }
   return ret;
