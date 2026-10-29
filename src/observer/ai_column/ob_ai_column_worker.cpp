@@ -18,7 +18,7 @@
 #include "share/schema/ob_multi_version_schema_service.h"
 #include "share/schema/ob_table_schema.h"
 #include "share/schema/ob_ai_column_task_service.h"
-#include "share/schema/ob_database_schema.h"
+#include "share/schema/ob_schema_struct.h"
 #include "sql/engine/expr/ob_expr_ai/ob_ai_func_utils.h"
 #include "share/ob_server_struct.h"
 

@@ -34,7 +34,6 @@ public:
 
   virtual void run2() override;
   virtual int before_blocking_run() override { return common::OB_SUCCESS; }
-  virtual void destroy() override {}
 
   // Poll interval in microseconds.
   static constexpr int64_t POLL_INTERVAL_US = 100 * 1000;
