@@ -34,7 +34,18 @@ public:
   virtual int escape(const char *from, const int64_t from_size,
                      char *to, const int64_t to_size, int64_t &out_size) override
   {
-    return ObISQLClient::escape(from, from_size, to, to_size, out_size);
+    // Copy-through escape: every AI-column SQL value is already passed
+    // through ObHexEscapeSqlStr upstream, so no further escaping is needed.
+    int ret = common::OB_SUCCESS;
+    if (to_size < from_size) {
+      ret = common::OB_BUF_NOT_ENOUGH;
+    } else if (NULL != from && from_size > 0) {
+      MEMCPY(to, from, from_size);
+      out_size = from_size;
+    } else {
+      out_size = 0;
+    }
+    return ret;
   }
   virtual int read(ReadResult &res, const char *sql, const int32_t group_id) override
   {
