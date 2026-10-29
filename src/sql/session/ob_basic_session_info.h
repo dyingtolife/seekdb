@@ -509,6 +509,7 @@ public:
     return common::OB_SUCCESS;
   }
   ObSQLMode get_sql_mode() const { return sys_vars_cache_.get_sql_mode(); }
+  int64_t get_ai_column_strict_read() const { return sys_vars_cache_.get_ai_column_strict_read(); }
   int get_div_precision_increment(int64_t &div_precision_increment) const;
   int get_character_set_client(common::ObCharsetType &character_set_client) const;
   int get_character_set_connection(common::ObCharsetType &character_set_connection) const;

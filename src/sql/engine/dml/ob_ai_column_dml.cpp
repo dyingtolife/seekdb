@@ -18,7 +18,36 @@
 #include "sql/engine/ob_exec_context.h"
 #include "share/schema/ob_ai_column_task_service.h"
 #include "share/inner_table/ob_inner_table_schema.h"
-#include "sql/session/ob_inner_sql_connection.h"
+#include "query/session/ob_inner_sql_connection_access.h"
+
+namespace oceanbase
+{
+namespace sql
+{
+// Minimal ObISQLClient view over a session ObISQLConnection so the task
+// service (ObISQLClient based) can run through the session inner connection.
+class ObAiInnerConnClient : public ObISQLClient
+{
+public:
+  explicit ObAiInnerConnClient(ObISQLConnection *conn) : conn_(conn) {}
+  virtual ~ObAiInnerConnClient() = default;
+  virtual int execute_read(ReadResult &res, const char *sql,
+                           const int32_t group_id) override
+  {
+    UNUSED(group_id);
+    return NULL == conn_ ? OB_NOT_INIT : conn_->execute_read(ObString(sql), res);
+  }
+  virtual int execute_write(const char *sql, const int32_t group_id,
+                            int64_t &affected_rows) override
+  {
+    UNUSED(group_id);
+    return NULL == conn_ ? OB_NOT_INIT : conn_->execute_write(ObString(sql), affected_rows);
+  }
+private:
+  ObISQLConnection *conn_;
+};
+}  // namespace sql
+}
 #include "sql/resolver/dml/ob_dml_stmt.h"
 #include "sql/resolver/expr/ob_raw_expr.h"
 
@@ -46,15 +75,21 @@ int ObAiColumnDMLUtils::init_ctx(const ObTableSchema &table_schema,
   ai_ctx.has_ai_columns_ = has_async;
   ai_ctx.table_id_ = table_schema.get_table_id();
   // Rowkey column names (for PK-update detection).
-  for (int64_t i = 0; i < table_schema.get_rowkey_column_num(); ++i) {
-    const ObColumnSchemaV2 *rk_col = table_schema.get_rowkey_column(i);
-    if (OB_NOT_NULL(rk_col)) {
-      ObString name_copy;
-      ObIAllocator &alloc = *alloc_holder_;
-      if (OB_FAIL(ob_write_string(alloc, rk_col->get_column_name_str(), name_copy))) {
-        SQL_ENG_LOG(WARN, "copy rowkey name failed", K(ret));
-      } else if (OB_FAIL(ai_ctx.rowkey_names_.push_back(name_copy))) {
-        SQL_ENG_LOG(WARN, "push rowkey name failed", K(ret));
+  ObArray<share::schema::ObColDesc> rk_ids;
+  if (OB_FAIL(table_schema.get_rowkey_column_ids(rk_ids))) {
+    SQL_ENG_LOG(WARN, "get rowkey column ids failed", K(ret));
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < rk_ids.count(); ++i) {
+      const ObColumnSchemaV2 *rk_col =
+          table_schema.get_column_schema(rk_ids.at(i).col_id_);
+      if (OB_NOT_NULL(rk_col)) {
+        ObString name_copy;
+        ObIAllocator &alloc = *alloc_holder_;
+        if (OB_FAIL(ob_write_string(alloc, rk_col->get_column_name_str(), name_copy))) {
+          SQL_ENG_LOG(WARN, "copy rowkey name failed", K(ret));
+        } else if (OB_FAIL(ai_ctx.rowkey_names_.push_back(name_copy))) {
+          SQL_ENG_LOG(WARN, "push rowkey name failed", K(ret));
+        }
       }
     }
   }
@@ -139,10 +174,9 @@ int ObAiColumnDMLUtils::build_rowkey_predicate(
         }
       } else {
         char tmp[128];
-        int64_t pos = 0;
-        if (OB_FAIL(datum->print_expr_str(tmp, sizeof(tmp), pos))) {
+        int64_t pos = datum->to_string(tmp, sizeof(tmp));
+        if (pos <= 0 || OB_FAIL(buf.append(tmp, static_cast<int32_t>(pos)))) {
           SQL_ENG_LOG(WARN, "print key value failed", K(ret));
-        } else if (OB_FAIL(buf.append(tmp, static_cast<int32_t>(pos)))) {
           break;
         }
       }
@@ -178,8 +212,8 @@ int ObAiColumnDMLUtils::capture_row(ObEvalCtx &eval_ctx,
       // request id: per statement + per row counter, unique per row change.
       char req_buf[64];
       int64_t pos = 0;
-      uint64_t sess_id = eval_ctx.exec_ctx_.get_my_session()->get_sessid();
-      int64_t stmt_id = eval_ctx.exec_ctx_.get_current_stmt_id();
+      uint64_t sess_id = eval_ctx.exec_ctx_.get_my_session()->get_sid();
+      int64_t stmt_id = eval_ctx.exec_ctx_.get_execution_id();
       int64_t seq = ++ai_ctx.request_seq_;
       if (OB_FAIL(databuff_printf(req_buf, sizeof(req_buf), pos,
                                   "%lu-%ld-%ld", sess_id, stmt_id, seq))) {
@@ -212,14 +246,14 @@ int ObAiColumnDMLUtils::flush_changes(ObExecContext &exec_ctx,
     } else {
       // Session inner connection: joins the user's current transaction, so
       // task rows and hidden-column updates commit/rollback with the data.
-      ObInnerSQLConnectionGuard conn_guard;
-      if (OB_FAIL(ObInnerSQLConnection::create_connection_with_external_session(
+      common::sqlclient::ObISQLConnectionGuard conn_guard;
+      if (OB_FAIL(query::ObInnerSQLConnectionAccess::create_connection_with_external_session(
               session, conn_guard))) {
         SQL_ENG_LOG(WARN, "create session inner connection failed", K(ret));
       } else {
-        ObISQLClient *client = conn_guard.get_ptr();
         ObArenaAllocator alloc("AiColFlush");
         ObAiColumnTaskService task_svc(alloc);
+        ObAiInnerConnClient client_wrapper(conn_guard.get_ptr());
         for (int64_t i = 0; OB_SUCC(ret) && i < ai_ctx.row_changes_.count(); ++i) {
           ObAiColumnDMLCtx::RowChange &change = ai_ctx.row_changes_.at(i);
           if (change.is_delete_) {
@@ -292,29 +326,31 @@ int ObAiColumnDMLUtils::check_no_direct_assignment(
 
 int ObAiColumnDMLUtils::check_strict_read_for_stmt(
     ObStmt &basic_stmt,
-    sql::ObSQLSessionInfo *session)
+    sql::ObSQLSessionInfo *session,
+    share::schema::ObSchemaGetterGuard *schema_guard)
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(session)) {
     ret = OB_ERR_UNEXPECTED;
   } else {
-    int64_t strict = session->sys_vars_cache_.get_ai_column_strict_read();
+    int64_t strict = session->get_ai_column_strict_read();
     if (0 == strict) {
       // strict read off: no check
     } else if (!basic_stmt.is_dml_stmt()) {
       // only SELECT/UPDATE/DELETE (+their EXPLAIN) go through the check
     } else {
       ObDMLStmt *dml_stmt = static_cast<ObDMLStmt *>(&basic_stmt);
-      ObSchemaGetterGuard &guard = session->get_schema_guard();
-      ObSQLSessionInfo *my_session = session;
-      // Collect distinct (table_id, ai state/result col ids) referenced by
-      // the statement's column expressions.
+      ObSchemaGetterGuard *guard = schema_guard;
+      // Collect distinct table ids referenced by the statement's column
+      // expressions.
       ObArray<ObColumnRefRawExpr *> col_exprs;
-      if (OB_FAIL(dml_stmt->get_column_exprs(col_exprs))) {
+      if (OB_ISNULL(guard)) {
+        ret = OB_ERR_UNEXPECTED;
+        SQL_ENG_LOG(WARN, "no schema guard for strict read", K(ret));
+      } else if (OB_FAIL(dml_stmt->get_column_exprs(col_exprs))) {
         SQL_ENG_LOG(WARN, "collect column exprs failed", K(ret));
       } else {
-        ObArray<std::pair<uint64_t, uint64_t>> checked;  // (state col id)
-        ObArray<uint64_t> table_ids;
+        ObArray<uint64_t> checked;  // checked table ids
         for (int64_t i = 0; OB_SUCC(ret) && i < col_exprs.count(); ++i) {
           ObColumnRefRawExpr *col_expr = col_exprs.at(i);
           uint64_t tid = col_expr->get_table_id();
@@ -331,7 +367,7 @@ int ObAiColumnDMLUtils::check_strict_read_for_stmt(
           }
           // look up the table schema and AI columns
           if (OB_FAIL(ret)) {
-          } else if (OB_FAIL(guard.get_table_schema(tid, table_schema))) {
+          } else if (OB_FAIL(guard->get_table_schema(tid, table_schema))) {
             SQL_ENG_LOG(WARN, "get table schema failed", K(ret), K(tid));
           } else if (OB_ISNULL(table_schema)) {
             // not a real table
@@ -357,7 +393,7 @@ int ObAiColumnDMLUtils::check_strict_read_for_stmt(
               const ObDatabaseSchema *db_schema = NULL;
               if (OB_ISNULL(state_col)) {
                 ret = OB_ERR_UNEXPECTED;
-              } else if (OB_FAIL(guard.get_database_schema(
+              } else if (OB_FAIL(guard->get_database_schema(
                              table_schema->get_database_id(), db_schema))) {
                 SQL_ENG_LOG(WARN, "get db schema failed", K(ret));
               } else if (OB_ISNULL(db_schema)) {
@@ -374,7 +410,7 @@ int ObAiColumnDMLUtils::check_strict_read_for_stmt(
                                              state_col->get_column_name_str().length(),
                                              state_col->get_column_name_str().ptr()))) {
                     SQL_ENG_LOG(WARN, "build strict check sql failed", K(ret));
-                  } else if (OB_FAIL(GCTX.sql_proxy_->read(sql.ptr(), res))) {
+                  } else if (OB_FAIL(GCTX.sql_proxy_->read(res, sql.ptr()))) {
                     SQL_ENG_LOG(WARN, "strict check read failed", K(ret), "sql", sql.ptr());
                   } else if (OB_ISNULL(result = res.get_result())) {
                     ret = OB_ERR_UNEXPECTED;
@@ -465,11 +501,17 @@ int ObAiColumnDMLUtils::retry_ai_column(
       if (OB_SUCC(ret)) {
         // Build the rowkey select list: backticked rowkey column names.
         ObStringBuffer rk_list(&exec_ctx.get_allocator());
-        for (int64_t k = 0; OB_SUCC(ret) && k < table_schema.get_rowkey_column_num(); ++k) {
-          const ObColumnSchemaV2 *rk = table_schema.get_rowkey_column(k);
-          if (OB_ISNULL(rk)) {
-            ret = OB_ERR_UNEXPECTED;
-          } else {
+        ObArray<share::schema::ObColDesc> rk_ids;
+        if (OB_FAIL(table_schema.get_rowkey_column_ids(rk_ids))) {
+          SQL_ENG_LOG(WARN, "get rowkey column ids failed", K(ret));
+        } else {
+          for (int64_t k = 0; OB_SUCC(ret) && k < rk_ids.count(); ++k) {
+            const ObColumnSchemaV2 *rk =
+                table_schema.get_column_schema(rk_ids.at(k).col_id_);
+            if (OB_ISNULL(rk)) {
+              ret = OB_ERR_UNEXPECTED;
+              break;
+            }
             if (k > 0 && OB_FAIL(rk_list.append(","))) { break; }
             ObString rk_name = rk->get_column_name_str();
             if (OB_FAIL(rk_list.append("`"))) { break; }
@@ -499,7 +541,7 @@ int ObAiColumnDMLUtils::retry_ai_column(
                                              where_buf.length(),
                                              where_buf.length() ? where_buf.ptr() : ""))) {
                 SQL_ENG_LOG(WARN, "build retry select failed", K(ret));
-              } else if (OB_FAIL(GCTX.sql_proxy_->read(sel_sql.ptr(), sel_res))) {
+              } else if (OB_FAIL(GCTX.sql_proxy_->read(sel_res, sel_sql.ptr()))) {
                 SQL_ENG_LOG(WARN, "retry select failed", K(ret), "sql", sel_sql.ptr());
               } else if (OB_ISNULL(sel_result = sel_res.get_result())) {
                 ret = OB_ERR_UNEXPECTED;
@@ -521,19 +563,20 @@ int ObAiColumnDMLUtils::retry_ai_column(
                 if (OB_ITER_END == ret) { ret = OB_SUCCESS; }
                 if (OB_SUCC(ret)) {
                   // Invalidate + enqueue per matched row in this session txn.
-                  ObInnerSQLConnectionGuard conn_guard;
-                  if (OB_FAIL(ObInnerSQLConnection::create_connection_with_external_session(
+                  common::sqlclient::ObISQLConnectionGuard conn_guard;
+                  if (OB_FAIL(query::ObInnerSQLConnectionAccess::create_connection_with_external_session(
                           session, conn_guard))) {
                     SQL_ENG_LOG(WARN, "create inner conn failed", K(ret));
                   } else {
-                    ObISQLClient *client = conn_guard.get_ptr();
+                    ObAiInnerConnClient conn_client(conn_guard.get_ptr());
+                    ObISQLClient *client = &conn_client;
                     ObArenaAllocator alloc("AiColRetry");
                     ObAiColumnTaskService task_svc(alloc);
                     for (int64_t r = 0; OB_SUCC(ret) && r < rowkeys.count(); ++r) {
                       char req_buf[64];
                       int64_t pos = 0;
-                      uint64_t sess_id = session->get_sessid();
-                      int64_t stmt_id = exec_ctx.get_current_stmt_id();
+                      uint64_t sess_id = session->get_sid();
+                      int64_t stmt_id = exec_ctx.get_execution_id();
                       if (OB_FAIL(databuff_printf(req_buf, sizeof(req_buf), pos,
                                                   "%lu-%ld-%ld", sess_id, stmt_id, r))) {
                         SQL_ENG_LOG(WARN, "build request id failed", K(ret));

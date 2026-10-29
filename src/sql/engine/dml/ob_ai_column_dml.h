@@ -103,7 +103,8 @@ public:
   // session variable ai_column_strict_read is ON.
   static int check_strict_read_for_stmt(
       ObStmt &basic_stmt,
-      sql::ObSQLSessionInfo *session);
+      sql::ObSQLSessionInfo *session,
+      share::schema::ObSchemaGetterGuard *schema_guard);
 
   // RETRY AI COLUMN: select matched rowkeys (status pseudo column maps to
   // the hidden state column), invalidate them and enqueue fresh tasks.
