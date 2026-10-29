@@ -2288,7 +2288,7 @@ int ObSql::generate_physical_plan(ParseResult &parse_result,
     // AI column strict read: error when the statement references an AI
     // column with not-READY rows and ai_column_strict_read is ON.
     if (OB_FAIL(ObAiColumnDMLUtils::check_strict_read_for_stmt(
-            *basic_stmt, sql_ctx.session_))) {
+            *basic_stmt, sql_ctx.session_info_))) {
       SQL_LOG(INFO, "ai column strict read blocked statement", K(ret));
     } else if (OB_FAIL(generate_plan(parse_result, pc_ctx, sql_ctx, result, mode, basic_stmt,
                              stmt_need_privs))) {
