@@ -649,11 +649,11 @@ int ObTableModifyOp::inner_open()
   if (OB_SUCCESS == ret) {
     uint64_t data_table_id = common::OB_INVALID_ID;
     const ObDMLBaseCtDef *dml_ctdef = nullptr;
-    if (OB_SUCCESS != get_single_dml_ctdef(dml_ctdef) || OB_ISNULL(dml_ctdef)) {
+    if (OB_SUCCESS != MY_SPEC.get_single_dml_ctdef(dml_ctdef) || OB_ISNULL(dml_ctdef)) {
       // multi-table or unexpected: skip
     } else {
       data_table_id = dml_ctdef->das_base_ctdef_.table_id_;
-      ObSchemaGetterGuard *guard = &my_session->get_schema_guard();
+      ObSchemaGetterGuard *guard = ctx_.get_sql_ctx()->schema_guard_;
       const ObTableSchema *table_schema = nullptr;
       int ai_ret = OB_SUCCESS;
       if (OB_SUCCESS != (ai_ret = guard->get_table_schema(data_table_id, table_schema))
@@ -839,7 +839,7 @@ int ObTableModifyOp::inner_close()
   int ai_ret = OB_SUCCESS;
   uint64_t ai_table_id = ai_dml_ctx_.table_id_;
   if (!ai_dml_ctx_.is_empty() && common::OB_INVALID_ID != ai_table_id) {
-    ObSchemaGetterGuard *guard = &GET_MY_SESSION(ctx_)->get_schema_guard();
+    ObSchemaGetterGuard *guard = ctx_.get_sql_ctx()->schema_guard_;
     const ObTableSchema *table_schema = nullptr;
     if (OB_SUCCESS != (ai_ret = guard->get_table_schema(ai_table_id, table_schema))
         || OB_ISNULL(table_schema)) {

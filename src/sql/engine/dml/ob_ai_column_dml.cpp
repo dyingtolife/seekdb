@@ -18,7 +18,7 @@
 #include "sql/engine/ob_exec_context.h"
 #include "share/schema/ob_ai_column_task_service.h"
 #include "share/inner_table/ob_inner_table_schema.h"
-#include "observer/ob_inner_sql_connection.h"
+#include "sql/session/ob_inner_sql_connection.h"
 #include "sql/resolver/dml/ob_dml_stmt.h"
 #include "sql/resolver/expr/ob_raw_expr.h"
 
