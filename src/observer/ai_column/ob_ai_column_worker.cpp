@@ -21,6 +21,7 @@
 #include "share/schema/ob_schema_struct.h"
 #include "sql/engine/expr/ob_expr_ai/ob_ai_func_utils.h"
 #include "share/ob_server_struct.h"
+#include "query/ai/ob_ai_endpoint_resolver.h"
 
 namespace oceanbase
 {
@@ -153,7 +154,7 @@ int ObAiColumnWorker::execute_task_group(common::ObMySQLProxy &sql_proxy,
         ObAIFuncExprInfo *info = NULL;
         ObAiModelEndpointInfo endpoint;
         query::ObIAiEndpointResolver *resolver =
-            ::oceanbase::share::server_service<::oceanbase::query::ObIAiEndpointResolver>();
+            share::server_service<query::ObIAiEndpointResolver>();
         const ObColumnSchemaV2 *result_col = table_schema.get_column_schema(ai_col.column_id_);
         ObString system_prompt;
         if (OB_ISNULL(resolver)) {
@@ -226,7 +227,7 @@ int ObAiColumnWorker::process_one_task(ObMySQLProxy &sql_proxy,
   int ret = OB_SUCCESS;
   ObArenaAllocator alloc("AiColTask");
   ObSchemaGetterGuard guard;
-  ObTableSchema *table_schema = NULL;
+  const ObTableSchema *table_schema = NULL;
   const ObSimpleDatabaseSchema *db_schema = NULL;
   ObString db_name;
   if (OB_FAIL(ObMultiVersionSchemaService::get_instance()
@@ -273,7 +274,7 @@ int ObAiColumnWorker::process_one_task(ObMySQLProxy &sql_proxy,
       if (OB_SUCCESS == call_ret) {
         // Publish in one transaction with task cleanup.
         ObMySQLTransaction trans;
-        if (OB_FAIL(trans.init(&sql_proxy))) {
+        if (OB_FAIL(trans.start(&sql_proxy))) {
           SERVER_LOG(WARN, "init publish txn failed", K(ret));
         } else {
           ObAiColumnTaskService::PublishEntry entry;
@@ -284,6 +285,7 @@ int ObAiColumnWorker::process_one_task(ObMySQLProxy &sql_proxy,
             SERVER_LOG(WARN, "push publish entry failed", K(ret));
           } else {
             int pub_ret = task_svc.publish_group(trans, *table_schema,
+                                                 OB_INVALID_ID,
                                                  task.rowkey_predicate_,
                                                  task.request_id_, entries,
                                                  task.definition_version_);
@@ -304,7 +306,7 @@ int ObAiColumnWorker::process_one_task(ObMySQLProxy &sql_proxy,
         }
         if (task.retry_count_ >= ai_col->max_retries_) {
           ObMySQLTransaction trans;
-          if (OB_FAIL(trans.init(&sql_proxy))) {
+          if (OB_FAIL(trans.start(&sql_proxy))) {
             SERVER_LOG(WARN, "init fail txn failed", K(ret));
           } else {
             ObArray<ObAiColumnTaskService::ClaimedTask> group;
@@ -312,6 +314,7 @@ int ObAiColumnWorker::process_one_task(ObMySQLProxy &sql_proxy,
               SERVER_LOG(WARN, "push fail group failed", K(ret));
             } else {
               int pf_ret = task_svc.publish_failure_group(trans, *table_schema,
+                                                          OB_INVALID_ID,
                                                           task.rowkey_predicate_,
                                                           task.request_id_, group,
                                                           task.definition_version_);
@@ -333,8 +336,12 @@ void ObAiColumnWorker::run2()
   int ret = OB_SUCCESS;
   SERVER_LOG(INFO, "ai column worker loop start");
   ObArenaAllocator loop_alloc("AiColLoop");
-  if (OB_FAIL(ObAiColumnTaskService::recover_stuck_tasks(*GCTX.sql_proxy_))) {
-    SERVER_LOG(WARN, "recover stuck ai tasks failed", K(ret));
+  {
+    ObArenaAllocator tmp_alloc("AiColRecover");
+    ObAiColumnTaskService recover_svc(tmp_alloc);
+    if (OB_FAIL(recover_svc.recover_stuck_tasks(*GCTX.sql_proxy_))) {
+      SERVER_LOG(WARN, "recover stuck ai tasks failed", K(ret));
+    }
   }
   while (!has_set_stop()) {
     ret = OB_SUCCESS;
