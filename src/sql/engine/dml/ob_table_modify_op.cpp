@@ -832,7 +832,6 @@ int ObTableModifyOp::inner_close()
     }
   }
   dml_modify_rows_.clear();
-    dml_modify_rows_.clear();
   // AI column linkage flush: task rows and hidden-column updates inside the
   // user transaction. Errors are logged but do not fail the DML (the data
   // change itself succeeded; the AI results will be picked up on the next
@@ -851,7 +850,6 @@ int ObTableModifyOp::inner_close()
     }
   }
   return ret;
-}
 }
 
 OB_INLINE int ObTableModifyOp::init_foreign_key_operation()
