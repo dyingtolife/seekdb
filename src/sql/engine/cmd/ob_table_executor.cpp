@@ -768,8 +768,7 @@ int ObAlterTableExecutor::execute(ObExecContext &ctx, ObAlterTableStmt &stmt)
     // RETRY AI COLUMN: synchronous in-session execution. Select matched
     // rowkeys (status pseudo column maps to the hidden state column),
     // invalidate them and enqueue fresh tasks. Not a schema change.
-    ObSQLSessionInfo *my_session = ctx.get_my_session();
-    ObSchemaGetterGuard &guard = my_session->get_schema_guard();
+    ObSchemaGetterGuard &guard = *ctx.get_sql_ctx()->schema_guard_;
     const ObTableSchema *table_schema = NULL;
     if (OB_FAIL(guard.get_table_schema(stmt.get_alter_table_arg().alter_table_schema_.get_table_id(),
                                        table_schema))) {
