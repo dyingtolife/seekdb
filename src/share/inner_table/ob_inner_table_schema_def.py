@@ -2475,8 +2475,8 @@ all_ai_column_def = dict(
         ('request_column_id', 'int', 'false'),
         ('result_spec_column_id', 'int', 'false'),
         ('model_name', 'varchar:OB_MAX_COLUMN_NAME_LENGTH', 'false', ''),
-        ('input_expr', 'varchar:OB_MAX_LONGTEXT_LENGTH', 'true'),
-        ('normalized_expr', 'varchar:OB_MAX_LONGTEXT_LENGTH', 'true')
+        ('input_expr', 'varchar:4096', 'true'),
+        ('normalized_expr', 'varchar:4096', 'true')
     ]
 )
 def_table_schema(**all_ai_column_def)
@@ -2523,7 +2523,7 @@ all_ai_column_task_def = dict(
     meta_record_in_sys = False,
     normal_columns = [
         ('column_id', 'int', 'false'),
-        ('rowkey_predicate', 'varchar:OB_MAX_LONGTEXT_LENGTH', 'false'),
+        ('rowkey_predicate', 'varchar:4096', 'false'),
         ('eligible_ts', 'timestamp:6', 'false'),
         ('definition_version', 'int', 'false', 0),
         ('status', 'varchar:16', 'false', 'PENDING'),
