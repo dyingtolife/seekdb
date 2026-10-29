@@ -20,6 +20,8 @@
 #include <map>
 #include <set>
 #include <mutex>
+#include <chrono>
+#include <thread>
 #include <vector>
 #include <cstdlib>
 #include <cstdio>
@@ -75,6 +77,7 @@ struct ObCuvsEntry {
   std::vector<float> buf_vecs_; // accumulated vectors (row-major) from add_index
   std::vector<int64_t> buf_ids_;// accumulated external vids from add_index
   size_t built_n_ = 0;          // #vectors present when cuVS was last (re)built
+  bool prebuild_scheduled_ = false; // one idle-triggered CAGRA build is pending
 };
 static std::mutex g_ob_cuvs_mu;
 static std::map<void *, ObCuvsEntry *> g_ob_cuvs_reg;
@@ -131,6 +134,7 @@ static void ob_cuvs_register(void *key, const float *vectors, const int64_t *ids
 // Buffer vectors arriving via add_index. Plain HNSW builds BOTH its delta and its
 // snapshot incrementally via add_index (one row at a time), so this is where the
 // real data flows -- unlike build_index which is only used by the HNSW_SQ bulk path.
+static void ob_cuvs_schedule_build(void *key);
 static void ob_cuvs_add(void *key, const float *vectors, const int64_t *ids,
                         int dim, int size) {
   if (vectors == nullptr || ids == nullptr || dim <= 0 || size <= 0) { return; }
@@ -139,9 +143,26 @@ static void ob_cuvs_add(void *key, const float *vectors, const int64_t *ids,
   if (slot == nullptr) { slot = new ObCuvsEntry(); slot->dim_ = dim; }
   if (slot->dim_ == 0) { slot->dim_ = dim; }
   if (slot->dim_ != dim) { return; }
-  slot->buf_vecs_.insert(slot->buf_vecs_.end(), vectors,
-                         vectors + static_cast<size_t>(dim) * size);
+  // Geometric reservation avoids repeatedly reallocating and copying the entire
+  // accumulated table while the DDL is streaming batches into it.
+  const size_t add_vecs = static_cast<size_t>(dim) * static_cast<size_t>(size);
+  if (slot->buf_vecs_.capacity() < slot->buf_vecs_.size() + add_vecs) {
+    size_t target = slot->buf_vecs_.capacity() * 2;
+    if (target < slot->buf_vecs_.size() + add_vecs) {
+      target = slot->buf_vecs_.size() + add_vecs;
+    }
+    slot->buf_vecs_.reserve(target);
+  }
+  if (slot->buf_ids_.capacity() < slot->buf_ids_.size() + static_cast<size_t>(size)) {
+    size_t target = slot->buf_ids_.capacity() * 2;
+    if (target < slot->buf_ids_.size() + static_cast<size_t>(size)) {
+      target = slot->buf_ids_.size() + static_cast<size_t>(size);
+    }
+    slot->buf_ids_.reserve(target);
+  }
+  slot->buf_vecs_.insert(slot->buf_vecs_.end(), vectors, vectors + add_vecs);
   slot->buf_ids_.insert(slot->buf_ids_.end(), ids, ids + size);
+  ob_cuvs_schedule_build(key);
 }
 static void ob_cuvs_erase(void *key) {
   { std::lock_guard<std::mutex> mg(g_ob_cuvs_marked_mu); g_ob_cuvs_marked.erase(key); }
@@ -225,6 +246,77 @@ static void *ob_cuvs_raw_batch_job(void *arg) {
 }
 
 static const size_t OB_CUVS_MIN_PTS = 256;  // CAGRA needs a graph; below this -> VSAG
+
+// Build once after the loader has been quiet for 500 ms.  This is deliberately
+// a one-shot, detached job rather than a persistent watcher: it never rebuilds
+// repeatedly, and the existing first-query build remains the fallback.  All
+// entry accesses are under g_ob_cuvs_mu, so dropping an index is safe.
+struct ObCuvsPrebuildArg {
+  void *key;
+  size_t expected_n;
+};
+static inline bool ob_cuvs_prebuild_enabled() {
+  static const bool enabled = []() {
+    const char *e = ::getenv("OB_CUVS_PREBUILD");
+    return e == nullptr || e[0] != '0';
+  }();
+  return enabled;
+}
+static void *ob_cuvs_prebuild_job(void *arg) {
+  ObCuvsPrebuildArg *job = static_cast<ObCuvsPrebuildArg *>(arg);
+  void *key = job->key;
+  const size_t expected_n = job->expected_n;
+  ::free(job);
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  std::lock_guard<std::mutex> guard(g_ob_cuvs_mu);
+  auto it = g_ob_cuvs_reg.find(key);
+  if (it == g_ob_cuvs_reg.end()) { return nullptr; }
+  ObCuvsEntry *ent = it->second;
+  // If more rows arrived, this scheduled job is obsolete.  The next add (or the
+  // first query) schedules/builds the complete graph instead.
+  if (ent->buf_ids_.size() != expected_n || ent->built_n_ == expected_n) {
+    ent->prebuild_scheduled_ = false;
+    return nullptr;
+  }
+  void *nb = seekdb_cuvs_build(ent->buf_vecs_.data(), static_cast<long>(expected_n),
+                               static_cast<long>(ent->dim_));
+  if (nb != nullptr) {
+    if (ent->bridge_ != nullptr) { seekdb_cuvs_free(ent->bridge_); }
+    ent->bridge_ = nb;
+    ent->built_n_ = expected_n;
+    ent->ids_ = ent->buf_ids_;
+    ob_vsag_trace("cuvs_prebuild", key, static_cast<long>(expected_n), 0);
+  }
+  ent->prebuild_scheduled_ = false;
+  return nullptr;
+}
+// Caller holds g_ob_cuvs_mu.
+static void ob_cuvs_schedule_build(void *key) {
+  if (!ob_cuvs_enabled() || !ob_cuvs_prebuild_enabled()) { return; }
+  auto it = g_ob_cuvs_reg.find(key);
+  if (it == g_ob_cuvs_reg.end()) { return; }
+  ObCuvsEntry *ent = it->second;
+  const size_t n = ent->buf_ids_.size();
+  if (n < OB_CUVS_MIN_PTS || ent->dim_ <= 0 || n <= ent->built_n_ ||
+      ent->prebuild_scheduled_) { return; }
+  ObCuvsPrebuildArg *arg =
+      static_cast<ObCuvsPrebuildArg *>(::malloc(sizeof(ObCuvsPrebuildArg)));
+  if (arg == nullptr) { return; }
+  arg->key = key;
+  arg->expected_n = n;
+  ent->prebuild_scheduled_ = true;
+  pthread_t tid;
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  pthread_attr_setstacksize(&attr, 32UL * 1024 * 1024);
+  if (pthread_create(&tid, &attr, ob_cuvs_prebuild_job, arg) == 0) {
+    pthread_detach(tid);
+  } else {
+    ::free(arg);
+    ent->prebuild_scheduled_ = false;
+  }
+  pthread_attr_destroy(&attr);
+}
 
 static bool ob_cuvs_try_search(void *key, vsag::Allocator *alloc,
                                const float *query, int /*dim*/, int64_t topk,
