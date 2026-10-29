@@ -1652,6 +1652,7 @@ private:
         bool inc_last_insert_id_:1;
         bool inc_binlog_row_image_:1;
         bool inc_foreign_key_checks_:1;
+        bool inc_ai_column_strict_read_:1;
         bool inc_default_password_lifetime_:1;
         bool inc_tx_read_only_:1;
         bool inc_ob_enable_plan_cache_:1;

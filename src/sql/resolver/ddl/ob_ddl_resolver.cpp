@@ -2754,7 +2754,7 @@ int ObDDLResolver::resolve_ai_column_definition(
       for (int64_t i = 0; i < call_text.length(); ++i) {
         char c = call_text.ptr()[i];
         if (in_squote) {
-          if ( '\\'' == c) { in_squote = false; }
+          if ('\'' == c) { in_squote = false; }
         } else if (in_dquote) {
           if ('"' == c) { in_dquote = false; }
         } else if (in_backquote) {
