@@ -54,7 +54,7 @@ int ObAiColumnTaskService::next_task_id(ObISQLClient &sql_client, int64_t &task_
     ObMySQLResult *result = NULL;
     if (OB_FAIL(sql.assign("SELECT MAX(task_id) AS max_id FROM __all_ai_column_task"))) {
       SHARE_SCHEMA_LOG(WARN, "build max task id sql failed", K(ret));
-    } else if (OB_FAIL(sql_client.read(sql.ptr(), res))) {
+    } else if (OB_FAIL(sql_client.read(res, sql.ptr()))) {
       SHARE_SCHEMA_LOG(WARN, "read max task id failed", K(ret));
     } else if (OB_ISNULL(result = res.get_result())) {
       ret = OB_ERR_UNEXPECTED;
@@ -248,7 +248,7 @@ int ObAiColumnTaskService::claim_tasks(ObISQLClient &sql_client,
               " ORDER BY task_id ASC",
               OB_AI_COLUMN_TASK_TABLE, static_cast<int>(AI_TASK_EXECUTING)))) {
         SHARE_SCHEMA_LOG(WARN, "build read claimed sql failed", K(ret));
-      } else if (OB_FAIL(sql_client.read(read_sql.ptr(), res))) {
+      } else if (OB_FAIL(sql_client.read(res, read_sql.ptr()))) {
         SHARE_SCHEMA_LOG(WARN, "read claimed tasks failed", K(ret));
       } else if (OB_ISNULL(result = res.get_result())) {
         ret = OB_ERR_UNEXPECTED;
@@ -533,3 +533,6 @@ int ObAiColumnTaskService::retry_column_rows(ObISQLClient &sql_client,
   return ret;
 }
 
+} // namespace schema
+} // namespace share
+} // namespace oceanbase
