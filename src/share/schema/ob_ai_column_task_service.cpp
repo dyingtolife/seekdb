@@ -16,7 +16,7 @@
 #include "share/inner_table/ob_inner_table_schema.h"
 #include "share/schema/ob_table_schema.h"
 #include "common/mysqlclient/ob_mysql_proxy.h"
-#include "sql/parser/ob_parser_utils.h"
+#include "common/object/ob_object.h"
 
 namespace oceanbase
 {
