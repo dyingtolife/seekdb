@@ -249,27 +249,40 @@ int ObAiColumnTaskService::claim_tasks(ObISQLClient &sql_client,
       } else {
         while (OB_SUCC(ret) && OB_SUCC(result->next())) {
           ClaimedTask task;
-          task.table_id_ = result->get_uint("table_id");
-          task.task_id_ = result->get_int("task_id");
-          task.column_id_ = result->get_uint("column_id");
-          task.definition_version_ = result->get_int("definition_version");
-          task.retry_count_ = result->get_int("retry_count");
-          ObString tmp;
-          ObString rowkey_copy;
-          ObString request_copy;
-          if (OB_FAIL(result->get_varchar("rowkey_predicate", tmp))) {
-            SHARE_SCHEMA_LOG(WARN, "read rowkey predicate failed", K(ret));
-          } else if (OB_FAIL(ob_write_string(allocator_, tmp, rowkey_copy))) {
-            SHARE_SCHEMA_LOG(WARN, "copy rowkey predicate failed", K(ret));
-          } else if (OB_FAIL(result->get_varchar("request_id", tmp))) {
-            SHARE_SCHEMA_LOG(WARN, "read request id failed", K(ret));
-          } else if (OB_FAIL(ob_write_string(allocator_, tmp, request_copy))) {
-            SHARE_SCHEMA_LOG(WARN, "copy request id failed", K(ret));
+          int64_t tmp_int = 0;
+          if (OB_FAIL(result->get_uint("table_id", task.table_id_))) {
+            SHARE_SCHEMA_LOG(WARN, "read task table id failed", K(ret));
+          } else if (OB_FAIL(result->get_int("task_id", tmp_int))) {
+            SHARE_SCHEMA_LOG(WARN, "read task id failed", K(ret));
+          } else if (OB_FAIL(result->get_uint("column_id", task.column_id_))) {
+            SHARE_SCHEMA_LOG(WARN, "read task column id failed", K(ret));
+          } else if (OB_FAIL(result->get_int("definition_version", task.definition_version_))) {
+            SHARE_SCHEMA_LOG(WARN, "read task definition version failed", K(ret));
+          } else if (OB_FAIL(result->get_int("retry_count", task.retry_count_))) {
+            SHARE_SCHEMA_LOG(WARN, "read task retry count failed", K(ret));
           } else {
-            task.rowkey_predicate_ = rowkey_copy;
-            task.request_id_ = request_copy;
-            if (OB_FAIL(tasks.push_back(task))) {
-              SHARE_SCHEMA_LOG(WARN, "append claimed task failed", K(ret));
+            task.task_id_ = tmp_int;
+          }
+          if (OB_FAIL(ret)) {
+            // leave loop on read error
+          } else {
+            ObString tmp;
+            ObString rowkey_copy;
+            ObString request_copy;
+            if (OB_FAIL(result->get_varchar("rowkey_predicate", tmp))) {
+              SHARE_SCHEMA_LOG(WARN, "read rowkey predicate failed", K(ret));
+            } else if (OB_FAIL(ob_write_string(allocator_, tmp, rowkey_copy))) {
+              SHARE_SCHEMA_LOG(WARN, "copy rowkey predicate failed", K(ret));
+            } else if (OB_FAIL(result->get_varchar("request_id", tmp))) {
+              SHARE_SCHEMA_LOG(WARN, "read request id failed", K(ret));
+            } else if (OB_FAIL(ob_write_string(allocator_, tmp, request_copy))) {
+              SHARE_SCHEMA_LOG(WARN, "copy request id failed", K(ret));
+            } else {
+              task.rowkey_predicate_ = rowkey_copy;
+              task.request_id_ = request_copy;
+              if (OB_FAIL(tasks.push_back(task))) {
+                SHARE_SCHEMA_LOG(WARN, "append claimed task failed", K(ret));
+              }
             }
           }
         }
