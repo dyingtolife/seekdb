@@ -31,18 +31,22 @@ class ObAiInnerConnClient : public ObISQLClient
 public:
   explicit ObAiInnerConnClient(ObISQLConnection *conn) : conn_(conn) {}
   virtual ~ObAiInnerConnClient() = default;
-  virtual int execute_read(ReadResult &res, const char *sql,
-                           const int32_t group_id) override
+  virtual int escape(const char *from, const int64_t from_size,
+                     char *to, const int64_t to_size, int64_t &out_size) override
+  {
+    return ObISQLClient::escape(from, from_size, to, to_size, out_size);
+  }
+  virtual int read(ReadResult &res, const char *sql, const int32_t group_id) override
   {
     UNUSED(group_id);
     return NULL == conn_ ? OB_NOT_INIT : conn_->execute_read(ObString(sql), res);
   }
-  virtual int execute_write(const char *sql, const int32_t group_id,
-                            int64_t &affected_rows) override
+  virtual int write(const char *sql, const int32_t group_id, int64_t &affected_rows) override
   {
     UNUSED(group_id);
     return NULL == conn_ ? OB_NOT_INIT : conn_->execute_write(ObString(sql), affected_rows);
   }
+  virtual sqlclient::ObISQLConnection *get_connection() override { return conn_; }
 private:
   ObISQLConnection *conn_;
 };
@@ -362,8 +366,6 @@ int ObAiColumnDMLUtils::check_strict_read_for_stmt(
           }
           if (already || OB_INVALID_ID == tid) {
             continue;
-          } else if (OB_FAIL(table_ids.push_back(tid))) {
-            // fall through
           }
           // look up the table schema and AI columns
           if (OB_FAIL(ret)) {
@@ -521,9 +523,11 @@ int ObAiColumnDMLUtils::retry_ai_column(
         }
         if (OB_SUCC(ret)) {
           ObString db_name;
-          ObSchemaGetterGuard &guard = session->get_schema_guard();
+          ObSchemaGetterGuard *guard_ptr = exec_ctx.get_sql_ctx()->schema_guard_;
           const ObDatabaseSchema *db_schema = NULL;
-          if (OB_FAIL(guard.get_database_schema(table_schema.get_database_id(), db_schema))) {
+          if (OB_ISNULL(guard_ptr)) {
+            ret = OB_ERR_UNEXPECTED;
+          } else if (OB_FAIL(guard_ptr->get_database_schema(table_schema.get_database_id(), db_schema))) {
             SQL_ENG_LOG(WARN, "get db schema failed", K(ret));
           } else if (OB_ISNULL(db_schema)) {
             ret = OB_ERR_UNEXPECTED;
