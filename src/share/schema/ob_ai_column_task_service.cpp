@@ -60,7 +60,12 @@ int ObAiColumnTaskService::next_task_id(ObISQLClient &sql_client, int64_t &task_
     } else if (OB_FAIL(result->next())) {
       SHARE_SCHEMA_LOG(WARN, "read max task id next failed", K(ret));
     } else {
-      task_id = result->get_int("max_id") + 1;
+      int64_t max_id = 0;
+      if (OB_FAIL(result->get_int("max_id", max_id))) {
+        SHARE_SCHEMA_LOG(WARN, "read max task id failed", K(ret));
+      } else {
+        task_id = max_id + 1;
+      }
     }
   }
   return ret;
