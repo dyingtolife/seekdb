@@ -16744,21 +16744,6 @@ NAME_OB '=' literal
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_EXPR_LIST, 2, $1, $3);
 }
-| NAME_OB
-{
-  /* bare flag, e.g. `header` in COPY options: value omitted */
-  malloc_non_terminal_node($$, result->malloc_pool_, T_EXPR_LIST, 1, $1);
-}
-| NAME_OB NAME_OB
-{
-  /* keyword value, e.g. `format csv` */
-  malloc_non_terminal_node($$, result->malloc_pool_, T_EXPR_LIST, 2, $1, $2);
-}
-| NAME_OB '=' NAME_OB
-{
-  /* `format = csv` */
-  malloc_non_terminal_node($$, result->malloc_pool_, T_EXPR_LIST, 2, $1, $3);
-}
 ;
 
 file_table_func_name:

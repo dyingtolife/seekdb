@@ -2696,22 +2696,22 @@ int ObDDLResolver::resolve_ai_column_definition(
   if (OB_SUCC(ret) && is_embedding) {
     // dim is the third argument of ai_embed: ai_embed(model, input, dim)
     ParseNode *params = NULL;
-    ParseNode *dim_node = NULL;
-    if (OB_UNLIKELY(expr_node->num_child_ < 2)
-        || OB_ISNULL(params = expr_node->children_[1])
-        || OB_UNLIKELY(T_EXPR_LIST != params->type_) || params->num_child_ < 3
-        || OB_ISNULL(dim_node = params->children_[2])) {
-      ret = OB_ERR_PARSER_SYNTAX;
-      SQL_RESV_LOG(WARN, "ai_embed requires (model, input, dim) in ai column", K(ret));
-    } else if (T_INT == dim_node->type_) {
-      vector_dimension = dim_node->value_;
-    } else {
+    // The 3rd dimension argument is optional: AI_EMBED(model, input) infers
+    // the dimension from the VECTOR(n) column type; AI_EMBED(model, input, n)
+    // must match it.
+    const bool has_dim_arg = (params->num_child_ >= 3
+        && OB_NOT_NULL(params->children_[2]));
+    if (!has_dim_arg) {
+      vector_dimension = 0;  // inferred later from the column type
+    } else if (T_INT != params->children_[2]->type_) {
       ret = OB_ERR_INVALID_VECTOR_DIM;
       SQL_RESV_LOG(WARN, "ai_embed dim must be an integer constant in ai column", K(ret));
-    }
-    if (OB_SUCC(ret) && vector_dimension <= 0) {
-      ret = OB_ERR_INVALID_VECTOR_DIM;
-      SQL_RESV_LOG(WARN, "ai_embed dim must be positive", K(ret), K(vector_dimension));
+    } else {
+      vector_dimension = params->children_[2]->value_;
+      if (vector_dimension <= 0) {
+        ret = OB_ERR_INVALID_VECTOR_DIM;
+        SQL_RESV_LOG(WARN, "ai_embed dim must be positive", K(ret), K(vector_dimension));
+      }
     }
     if (OB_SUCC(ret) && ob_is_collection_sql_type(column.get_data_type())) {
       int64_t col_dim = 0;
@@ -2722,6 +2722,9 @@ int ObDDLResolver::resolve_ai_column_definition(
           && OB_FAIL(ObVectorIndexUtil::get_vector_dim_from_extend_type_info(
                  column.get_extended_type_info(), col_dim))) {
         SQL_RESV_LOG(WARN, "failed to get vector column dim", K(ret));
+      } else if (!is_sparse && 0 == vector_dimension && col_dim > 0) {
+        // Dimension inferred from the VECTOR(n) column type.
+        vector_dimension = col_dim;
       } else if (!is_sparse && col_dim > 0 && vector_dimension != col_dim) {
         ret = OB_ERR_INVALID_VECTOR_DIM;
         LOG_USER_ERROR(OB_ERR_INVALID_VECTOR_DIM, static_cast<int32_t>(col_dim),

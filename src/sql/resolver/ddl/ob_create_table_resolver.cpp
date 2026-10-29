@@ -952,6 +952,11 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
             SQL_RESV_LOG(WARN, "ai column user column missing", K(ret), K(ai_col.column_id_));
           } else {
             const ObString user_name = ai_user_col->get_column_name_str();
+            if (OB_ISNULL(ai_col.column_name_.ptr()) || 0 == ai_col.column_name_.length()) {
+              if (OB_FAIL(ob_write_string(*allocator_, user_name, ai_col.column_name_))) {
+                SQL_RESV_LOG(WARN, "set ai column name failed", K(ret));
+              }
+            }
             const ObString suffixes[] = {"_state", "_request", "_result_spec"};
             const ObObjType types[] = {ObVarcharType, ObVarcharType, ObVarcharType};
             const int32_t lengths[] = {16, 4096, 1024};
