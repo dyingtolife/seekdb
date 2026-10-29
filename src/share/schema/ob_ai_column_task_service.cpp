@@ -15,7 +15,7 @@
 #include "share/schema/ob_ai_column_task_service.h"
 #include "share/inner_table/ob_inner_table_schema.h"
 #include "share/schema/ob_table_schema.h"
-#include "lib/mysqlclient/ob_mysql_proxy.h"
+#include "common/mysqlclient/ob_mysql_proxy.h"
 #include "sql/parser/ob_parser_utils.h"
 
 namespace oceanbase
