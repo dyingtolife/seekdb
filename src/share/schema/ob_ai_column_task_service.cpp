@@ -26,6 +26,7 @@ namespace schema
 {
 
 using namespace common;
+using namespace common::sqlclient;
 
 const char *OB_AI_COLUMN_TASK_TABLE = "__all_ai_column_task";
 
@@ -510,55 +511,25 @@ int ObAiColumnTaskService::retry_column_rows(ObISQLClient &sql_client,
   if (OB_ISNULL(state_col) || OB_ISNULL(request_col) || OB_ISNULL(result_col)) {
     ret = OB_ERR_UNEXPECTED;
     SHARE_SCHEMA_LOG(WARN, "retry hidden column missing", K(ret));
+  } else if (extra_predicate.length() <= 0) {
+    ret = OB_INVALID_ARGUMENT;
+    SHARE_SCHEMA_LOG(WARN, "retry needs a rowkey predicate", K(ret));
   } else {
-    // Build the WHERE clause: optional status pseudo condition + extra pred.
-    // `status` (bare) maps to the hidden state column; backticked `status`
-    // arrives pre-rewritten by the resolver to the physical column name.
-    ObSqlString where;
-    if (OB_FAIL(where.assign(""))) {
-    } else if (use_status_pseudo && status_value.length() > 0) {
-      if (OB_FAIL(where.append_fmt("%.*s = '%.*s'",
-                                   state_col->get_column_name_str().length(),
-                                   state_col->get_column_name_str().ptr(),
-                                   status_value.length(), status_value.ptr()))) {
-        SHARE_SCHEMA_LOG(WARN, "append status cond failed", K(ret));
-      }
-    }
-    if (OB_SUCC(ret) && extra_predicate.length() > 0) {
-      if (where.length() > 0 && OB_FAIL(where.append(" AND "))) {
-      } else if (OB_FAIL(where.append(extra_predicate))) {
-        SHARE_SCHEMA_LOG(WARN, "append extra predicate failed", K(ret));
-      }
-    }
-    if (OB_SUCC(ret)) {
-      // Collect matched rowkeys (rowkey predicate strings) by scanning the
-      // table with the condition; then invalidate + enqueue per row.
-      ObSqlString sel;
-      ObString col_name = state_col->get_column_name_str();
-      ObString req_name = request_col->get_column_name_str();
-      ObString res_name = result_col->get_column_name_str();
-      ObSqlString task_del;
-      SMART_VAR(ObMySQLProxy::MySQLResult, res) {
-        ObMySQLResult *result = NULL;
-        if (OB_FAIL(sel.assign_fmt("SELECT %.*s AS rk FROM %.*s%s%.*s",
-                                   table_schema.get_rowkey_column_names_str_for_ai_retry().length(),
-                                   table_schema.get_rowkey_column_names_str_for_ai_retry().ptr(),
-                                   table_schema.get_table_name_str().length(),
-                                   table_schema.get_table_name_str().ptr(),
-                                   where.length() > 0 ? " WHERE " : "",
-                                   where.length(), where.length() ? where.ptr() : ""))) {
-          SHARE_SCHEMA_LOG(WARN, "build retry select failed", K(ret));
-        }
-        // NOTE: the caller (executor) supplies the full rowkey predicate
-        // expression; see ObAiColumnRetryExecutor which handles this instead.
-        UNUSED(result);
-        UNUSED(res);
-      }
+    // The caller supplies one resolved full rowkey predicate per matched row
+    // and its pre-built request id (see ObAiColumnDMLUtils::retry_ai_column).
+    // The status pseudo filter is applied by that SELECT, so it is unused here.
+    UNUSED(use_status_pseudo);
+    UNUSED(status_value);
+    UNUSED(request_col);
+    UNUSED(result_col);
+    UNUSED(state_col);
+    if (OB_FAIL(invalidate_row(sql_client, table_schema, extra_predicate,
+                               extra_predicate))) {
+      SHARE_SCHEMA_LOG(WARN, "retry invalidate row failed", K(ret), "rk", extra_predicate.ptr());
+    } else {
+      matched_rows = 1;
     }
   }
   return ret;
 }
 
-} // namespace schema
-} // namespace share
-} // namespace oceanbase
