@@ -49,6 +49,10 @@ int ObAiColumnSqlService::splice_ai_column_insert(const ObAiColumnSchema &ai_col
   } else if (OB_FAIL(dml.add_uint64_column("request_column_id", ai_column.request_column_id_))) {
   } else if (OB_FAIL(dml.add_uint64_column("result_spec_column_id",
                                            ai_column.result_spec_column_id_))) {
+  } else if (OB_FAIL(dml.add_column("model_name",
+                                    ObHexEscapeSqlStr(ai_column.model_name_)))) {
+  } else if (OB_FAIL(dml.add_column("input_expr",
+                                    ObHexEscapeSqlStr(ai_column.input_expr_)))) {
   } else if (OB_FAIL(dml.add_column("normalized_expr",
                                     ObHexEscapeSqlStr(ai_column.normalized_expr_)))) {
   } else if (is_history && OB_FAIL(dml.add_column("is_deleted", 0))) {

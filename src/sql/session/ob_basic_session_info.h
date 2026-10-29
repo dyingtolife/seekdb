@@ -1346,6 +1346,7 @@ public:
         last_insert_id_(0),
         binlog_row_image_(2),
         foreign_key_checks_(0),
+        ai_column_strict_read_(0),
         default_password_lifetime_(0),
         tx_read_only_(false),
         ob_enable_pl_cache_(false),
@@ -1386,6 +1387,7 @@ public:
       last_insert_id_ = 0;
       binlog_row_image_ = 2;
       foreign_key_checks_ = 0;
+      ai_column_strict_read_ = 0;
       default_password_lifetime_ = 0;
       tx_read_only_ = false;
       ob_enable_pl_cache_ = false;
@@ -1424,6 +1426,7 @@ public:
             last_insert_id_ == other.last_insert_id_ &&
             binlog_row_image_ == other.binlog_row_image_ &&
             foreign_key_checks_ == other.foreign_key_checks_ &&
+            ai_column_strict_read_ == other.ai_column_strict_read_ &&
             default_password_lifetime_ == other.default_password_lifetime_ &&
             tx_read_only_ == other.tx_read_only_ &&
             ob_enable_pl_cache_ == other.ob_enable_pl_cache_ &&
@@ -1488,6 +1491,7 @@ public:
     uint64_t last_insert_id_;
     int64_t binlog_row_image_;
     int64_t foreign_key_checks_;
+    int64_t ai_column_strict_read_;
     uint64_t default_password_lifetime_;
     bool tx_read_only_;
     bool ob_enable_pl_cache_;
@@ -1591,6 +1595,7 @@ private:
     DEF_SYS_VAR_CACHE_FUNCS(uint64_t, last_insert_id);
     DEF_SYS_VAR_CACHE_FUNCS(int64_t, binlog_row_image);
     DEF_SYS_VAR_CACHE_FUNCS(int64_t, foreign_key_checks);
+    DEF_SYS_VAR_CACHE_FUNCS(int64_t, ai_column_strict_read);
     DEF_SYS_VAR_CACHE_FUNCS(uint64_t, default_password_lifetime);
     DEF_SYS_VAR_CACHE_FUNCS(bool, tx_read_only);
     DEF_SYS_VAR_CACHE_FUNCS(bool, ob_enable_pl_cache);

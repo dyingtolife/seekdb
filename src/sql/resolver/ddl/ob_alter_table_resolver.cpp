@@ -402,6 +402,39 @@ int ObAlterTableResolver::resolve_action_list(const ParseNode &node)
       } else {
         switch (action_node->type_) {
         //deal with alter table option
+        case T_ALTER_AI_RETRY: {
+            // RETRY AI COLUMN <col> [WHERE <expr>]: keep the column name and
+            // the raw condition text; execution re-resolves the condition
+            // against the table (status maps to the hidden state column).
+            ObAlterTableStmt::AiRetryArg arg;
+            arg.has_status_pseudo_ = false;
+            ParseNode *col_node = action_node->children_[0];
+            ParseNode *where_node = action_node->children_[1];
+            if (OB_ISNULL(col_node)) {
+              ret = OB_ERR_UNEXPECTED;
+            } else {
+              arg.column_name_.assign_ptr(col_node->str_value_,
+                                          static_cast<int32_t>(col_node->str_len_));
+              if (OB_NOT_NULL(where_node)) {
+                // children_[0] is the expr; children_[1] hints (NULL-able)
+                ParseNode *expr_node = where_node->children_[0];
+                if (OB_NOT_NULL(expr_node) && OB_NOT_NULL(expr_node->str_value_)) {
+                  arg.where_clause_.assign_ptr(expr_node->str_value_,
+                                               static_cast<int32_t>(expr_node->str_len_));
+                } else if (OB_NOT_NULL(expr_node)) {
+                  // Expression node without raw text: serialize nothing; the
+                  // executor falls back to per-status retry only.
+                  arg.where_clause_.reset();
+                }
+              }
+              if (OB_FAIL(alter_table_stmt->add_ai_retry_arg(arg))) {
+                SQL_RESV_LOG(WARN, "add ai retry arg failed", K(ret));
+              } else {
+                alter_table_stmt->set_alter_table_option();
+              }
+            }
+            break;
+          }
         case T_ALTER_TABLE_OPTION: {
             alter_table_stmt->set_alter_table_option();
             if (OB_ISNULL(action_node->children_)) {

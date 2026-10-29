@@ -4100,6 +4100,10 @@ int ObSchemaServiceSQLImpl::get_not_core_table_schema(
       && OB_FAIL(fetch_trigger_list(schema_status, table_id, schema_version,
                                     sql_client, *table_schema))) {
   }
+  if (OB_SUCC(ret) && !is_schema_fetch_dependency
+      && OB_FAIL(fetch_ai_column_info(schema_status, table_id, schema_version,
+                                      sql_client, *table_schema))) {
+  }
   return ret;
 }
 
@@ -4820,6 +4824,95 @@ int ObSchemaServiceSQLImpl::fetch_foreign_key_array_for_simple_table_schemas(
 }
 
 template <typename T>
+int ObSchemaServiceSQLImpl::fetch_ai_column_info(
+    const ObRefreshSchemaStatus &schema_status,
+    const uint64_t table_id,
+    const int64_t schema_version,
+    common::ObISQLClient &sql_client,
+    ObTableSchema &table_schema)
+{
+  int ret = OB_SUCCESS;
+  ObSqlString sql;
+  SMART_VAR(ObMySQLProxy::MySQLResult, res) {
+    ObMySQLResult *result = NULL;
+    const int64_t snapshot_timestamp = schema_status.snapshot_timestamp_;
+    DEFINE_SQL_CLIENT_RETRY_WEAK_WITH_SNAPSHOT(sql_client, snapshot_timestamp);
+    if (OB_FAIL(sql.append_fmt("SELECT /*FAI_COL*/ table_id, column_id, column_name, definition_version,"
+                               " sync_mode, max_retries, is_embedding, vector_dimension,"
+                               " state_column_id, request_column_id, result_spec_column_id,"
+                               " model_name, input_expr, normalized_expr"
+                               " FROM %s WHERE is_deleted = 0 AND table_id = %" PRIu64
+                               " AND schema_version <= %" PRId64
+                               " ORDER BY column_id ASC, schema_version DESC",
+                               OB_ALL_AI_COLUMN_HISTORY_TNAME, table_id, schema_version))) {
+      LOG_WARN("failed to build ai column fetch sql", K(ret));
+    } else if (OB_FAIL(sql_client_retry_weak.read(res, sql.ptr()))) {
+      LOG_WARN("failed to read ai column history", K(ret));
+    } else if (OB_ISNULL(result = res.get_result())) {
+      ret = OB_ERR_UNEXPECTED;
+    } else {
+      // Latest definition per column id wins (schema_version DESC ordering).
+      ObArray<ObAiColumnSchema> ai_columns;
+      ObArray<uint64_t> seen_column_ids;
+      while (OB_SUCC(ret) && OB_SUCC(result->next())) {
+        uint64_t column_id = result->get_uint("column_id");
+        bool seen = false;
+        for (int64_t i = 0; !seen && i < seen_column_ids.count(); ++i) {
+          seen = (seen_column_ids.at(i) == column_id);
+        }
+        if (seen) {
+          continue;
+        } else if (OB_FAIL(seen_column_ids.push_back(column_id))) {
+          LOG_WARN("failed to record seen ai column id", K(ret));
+        } else {
+          ObAiColumnSchema ai_column;
+          ai_column.table_id_ = result->get_uint("table_id");
+          ai_column.column_id_ = column_id;
+          ai_column.definition_version_ = result->get_uint("definition_version");
+          ai_column.max_retries_ = result->get_int("max_retries");
+          ai_column.is_embedding_ = (result->get_int("is_embedding") != 0);
+          ai_column.vector_dimension_ = result->get_int("vector_dimension");
+          ai_column.state_column_id_ = result->get_uint("state_column_id");
+          ai_column.request_column_id_ = result->get_uint("request_column_id");
+          ai_column.result_spec_column_id_ = result->get_uint("result_spec_column_id");
+          ObString tmp_str;
+          if (OB_FAIL(result->get_varchar("column_name", tmp_str))) {
+            LOG_WARN("failed to read ai column name", K(ret));
+          } else if (OB_FAIL(ai_column.set_column_name(table_schema.get_allocator(), tmp_str))) {
+            LOG_WARN("failed to copy ai column name", K(ret));
+          } else if (OB_FAIL(result->get_varchar("sync_mode", tmp_str))) {
+            LOG_WARN("failed to read ai sync mode", K(ret));
+          } else if (OB_FAIL(ai_column.set_sync_mode(table_schema.get_allocator(), tmp_str))) {
+            LOG_WARN("failed to copy ai sync mode", K(ret));
+          } else if (OB_FAIL(result->get_varchar("model_name", tmp_str))) {
+            LOG_WARN("failed to read ai model name", K(ret));
+          } else if (OB_FAIL(ai_column.set_model_name(table_schema.get_allocator(), tmp_str))) {
+            LOG_WARN("failed to copy ai model name", K(ret));
+          } else if (OB_FAIL(result->get_varchar("input_expr", tmp_str))) {
+            LOG_WARN("failed to read ai input expr", K(ret));
+          } else if (OB_FAIL(ai_column.set_input_expr(table_schema.get_allocator(), tmp_str))) {
+            LOG_WARN("failed to copy ai input expr", K(ret));
+          } else if (OB_FAIL(result->get_varchar("normalized_expr", tmp_str))) {
+            LOG_WARN("failed to read ai normalized expr", K(ret));
+          } else if (OB_FAIL(ai_column.set_normalized_expr(table_schema.get_allocator(), tmp_str))) {
+            LOG_WARN("failed to copy ai normalized expr", K(ret));
+          } else if (OB_FAIL(ai_columns.push_back(ai_column))) {
+            LOG_WARN("failed to append ai column", K(ret));
+          }
+        }
+      }
+      if (OB_SUCC(ret)) {
+        for (int64_t i = 0; OB_SUCC(ret) && i < ai_columns.count(); ++i) {
+          if (OB_FAIL(table_schema.add_ai_column_schema(ai_columns.at(i)))) {
+            LOG_WARN("failed to add ai column schema", K(ret));
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 int ObSchemaServiceSQLImpl::fetch_trigger_list(const ObRefreshSchemaStatus &schema_status,
                                                const uint64_t table_id,
                                                const int64_t schema_version,

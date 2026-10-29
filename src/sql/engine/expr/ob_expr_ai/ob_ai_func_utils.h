@@ -348,11 +348,16 @@ public:
   ObAIFuncModel(ObIAllocator &allocator, const ObAIFuncExprInfo &info, const share::ObAiModelEndpointInfo &endpoint_info)
   : allocator_(&allocator),
     info_(info),
-    endpoint_info_(endpoint_info)
+    endpoint_info_(endpoint_info),
+    messages_holder_(nullptr)
   {}
    virtual ~ObAIFuncModel() {}
    // completion
    int call_completion(ObString &prompt, ObJsonObject *config, ObString &result);
+   // completion with an explicit system message (AI column worker path).
+   int call_completion_with_system(ObString &system_prompt,
+                                   ObString &content,
+                                   ObString &result);
    int call_completion_vector(ObArray<ObString> &prompts, ObJsonObject *config, ObArray<ObString> &results);
    // dense_embedding
    int call_dense_embedding(ObString &content, ObJsonObject *config, ObString &result);
@@ -368,6 +373,7 @@ public:
    ObIAllocator *allocator_;
    const ObAIFuncExprInfo &info_;
    const share::ObAiModelEndpointInfo &endpoint_info_;
+   ObJsonArray *messages_holder_;
    DISALLOW_COPY_AND_ASSIGN(ObAIFuncModel);
 };
 

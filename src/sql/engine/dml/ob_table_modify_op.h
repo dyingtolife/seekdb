@@ -19,6 +19,7 @@
 
 #include "sql/engine/ob_operator.h"
 #include "sql/engine/dml/ob_dml_ctx_define.h"
+#include "sql/engine/dml/ob_ai_column_dml.h"
 #include "sql/session/ob_inner_sql_connection.h"
 #include "sql/engine/ob_exec_context.h"
 #include "sql/engine/dml/ob_fk_checker.h"
@@ -308,6 +309,7 @@ public:
   ObObjPrintParams obj_print_params_;
   bool iter_end_;
   ObDMLRtCtx dml_rtctx_;
+  ObAiColumnDMLCtx ai_dml_ctx_;   // AI column per-statement capture state
   bool execute_single_row_;
   ObSEArray<ObExpr *, 4> trigger_clear_exprs_;
   ObDMLModifyRowsList dml_modify_rows_;

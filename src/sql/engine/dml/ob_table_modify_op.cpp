@@ -644,6 +644,27 @@ int ObTableModifyOp::inner_open()
   } else {
     init_das_dml_ctx();
   }
+  // AI column linkage init: locate the data table schema once. Best effort:
+  // failure here only disables AI column linkage for this statement.
+  if (OB_SUCCESS == ret) {
+    uint64_t data_table_id = common::OB_INVALID_ID;
+    const ObDMLBaseCtDef *dml_ctdef = nullptr;
+    if (OB_SUCCESS != get_single_dml_ctdef(dml_ctdef) || OB_ISNULL(dml_ctdef)) {
+      // multi-table or unexpected: skip
+    } else {
+      data_table_id = dml_ctdef->das_base_ctdef_.table_id_;
+      ObSchemaGetterGuard *guard = &my_session->get_schema_guard();
+      const ObTableSchema *table_schema = nullptr;
+      int ai_ret = OB_SUCCESS;
+      if (OB_SUCCESS != (ai_ret = guard->get_table_schema(data_table_id, table_schema))
+          || OB_ISNULL(table_schema)) {
+        // best effort: no schema, no AI linkage
+      } else if (OB_SUCCESS != (ai_ret = ObAiColumnDMLUtils::init_ctx(
+              *table_schema, ai_dml_ctx_, &ctx_.get_allocator()))) {
+        SQL_ENG_LOG(WARN, "ai column init ctx failed", K(ai_ret));
+      }
+    }
+  }
   return ret;
 }
 
@@ -811,7 +832,26 @@ int ObTableModifyOp::inner_close()
     }
   }
   dml_modify_rows_.clear();
+    dml_modify_rows_.clear();
+  // AI column linkage flush: task rows and hidden-column updates inside the
+  // user transaction. Errors are logged but do not fail the DML (the data
+  // change itself succeeded; the AI results will be picked up on the next
+  // dependency change or RETRY).
+  int ai_ret = OB_SUCCESS;
+  uint64_t ai_table_id = ai_dml_ctx_.table_id_;
+  if (!ai_dml_ctx_.is_empty() && common::OB_INVALID_ID != ai_table_id) {
+    ObSchemaGetterGuard *guard = &GET_MY_SESSION(ctx_)->get_schema_guard();
+    const ObTableSchema *table_schema = nullptr;
+    if (OB_SUCCESS != (ai_ret = guard->get_table_schema(ai_table_id, table_schema))
+        || OB_ISNULL(table_schema)) {
+      // schema unavailable: skip AI flush silently
+    } else if (OB_SUCCESS != (ai_ret = ObAiColumnDMLUtils::flush_changes(
+            ctx_, *table_schema, ai_dml_ctx_))) {
+      SQL_ENG_LOG(WARN, "ai column flush failed", K(ai_ret), K(ai_table_id));
+    }
+  }
   return ret;
+}
 }
 
 OB_INLINE int ObTableModifyOp::init_foreign_key_operation()

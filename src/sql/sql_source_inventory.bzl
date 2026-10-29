@@ -296,6 +296,7 @@ SQL_UNITY_GROUPS = [
             "src/sql/engine/dml/ob_table_insert_up_op.cpp",
             "src/sql/engine/dml/ob_table_lock_op.cpp",
             "src/sql/engine/dml/ob_table_modify_op.cpp",
+            "src/sql/engine/dml/ob_ai_column_dml.cpp",
             "src/sql/engine/dml/ob_table_replace_op.cpp",
             "src/sql/engine/dml/ob_table_update_op.cpp",
             "src/sql/engine/dml/ob_trigger_handler.cpp",

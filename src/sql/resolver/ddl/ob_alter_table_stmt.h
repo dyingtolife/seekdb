@@ -45,6 +45,18 @@ public:
   void set_is_comment_table(const bool flag) { is_comment_table_ = flag; }
 
   uint64_t get_alter_table_action_count() { return alter_table_action_count_; }
+
+  // RETRY AI COLUMN action: column name + optional WHERE condition text.
+  struct AiRetryArg
+  {
+    common::ObString column_name_;
+    common::ObString where_clause_;   // empty = all rows
+    bool has_status_pseudo_;          // WHERE references the status pseudo column
+    AiRetryArg() : has_status_pseudo_(false) {}
+  };
+  int add_ai_retry_arg(const AiRetryArg &arg) { return ai_retry_args_.push_back(arg); }
+  common::ObIArray<AiRetryArg> &get_ai_retry_args() { return ai_retry_args_; }
+  bool has_ai_retry() const { return !ai_retry_args_.empty(); }
   void inc_alter_table_action_count() { ++alter_table_action_count_; }
 
 
@@ -106,6 +118,7 @@ public:
   void set_lock_priority();
 private:
   obcall::ObAlterTableArg alter_table_arg_;
+  common::ObSEArray<AiRetryArg, 1> ai_retry_args_;
   bool is_comment_table_;
   bool is_alter_system_;
   common::ObSArray<obcall::ObCreateIndexArg*> index_arg_list_;

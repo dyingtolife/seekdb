@@ -16,6 +16,7 @@
 
 #define USING_LOG_PREFIX SQL
 #include "config_bridge.h"
+#include "sql/engine/dml/ob_ai_column_dml.h"
 #include "sql/ob_sql.h"
 #include "lib/json/ob_json_print_utils.h"
 #include "lib/stat/ob_diagnostic_info_guard.h"
@@ -2284,7 +2285,12 @@ int ObSql::generate_physical_plan(ParseResult &parse_result,
   } else if (basic_stmt->is_dml_stmt()
              || basic_stmt->is_explain_stmt()
             ) {
-    if (OB_FAIL(generate_plan(parse_result, pc_ctx, sql_ctx, result, mode, basic_stmt,
+    // AI column strict read: error when the statement references an AI
+    // column with not-READY rows and ai_column_strict_read is ON.
+    if (OB_FAIL(ObAiColumnDMLUtils::check_strict_read_for_stmt(
+            *basic_stmt, sql_ctx.session_))) {
+      SQL_LOG(INFO, "ai column strict read blocked statement", K(ret));
+    } else if (OB_FAIL(generate_plan(parse_result, pc_ctx, sql_ctx, result, mode, basic_stmt,
                              stmt_need_privs))) {
     }
   } else if (stmt::T_EXECUTE == basic_stmt->get_stmt_type() &&

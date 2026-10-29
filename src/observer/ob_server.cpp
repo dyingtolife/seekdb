@@ -89,6 +89,7 @@ int ObServer::get_lower_bound_freeze_info(const int64_t snapshot_version, share:
 #include "common/xml/ob_libxml2_sax_handler.h"
 #include "observer/vector_index/ob_plugin_vector_index_utils.h"
 #include "observer/vector_index/ob_plugin_vector_index_service.h"
+#include "observer/ai_column/ob_ai_column_worker.h"
 #include "observer/composition/retrieval/ob_das_legacy_tr_merge_iter.h"
 #include "observer/change_stream/ob_change_stream_mgr.h"
 #include "share/roaringbitmap/ob_rb_memory_mgr.h"
@@ -1289,6 +1290,16 @@ int ObServer::start()
     } else {
       FLOG_INFO("success to initialize server runtime");
     }
+    {
+      int ai_worker_ret = OB_SUCCESS;
+      // AI column background worker: best-effort start; failure to start only
+      // disables async AI column generation.
+      if (OB_SUCCESS != (ai_worker_ret = ObAiColumnWorker::get_instance().start_worker())) {
+        LOG_WARN("start ai column worker failed", K(ai_worker_ret));
+      }
+    }
+    // AI column background worker: best-effort start; failure to start only
+    // disables async AI column generation.
     if (FAILEDx(local_management_service_.start_service())) {
       LOG_ERROR("fail to start local management services", KR(ret));
     } else {

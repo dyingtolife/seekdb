@@ -156,6 +156,7 @@ OBSERVER_UNITY_GROUPS = [
             "src/observer/vector_index/ob_plugin_vector_index_service.cpp",
             "src/observer/vector_index/ob_plugin_vector_index_util.cpp",
             "src/observer/vector_index/ob_plugin_vector_index_utils.cpp",
+            "src/observer/ai_column/ob_ai_column_worker.cpp",
             "src/observer/vector_index/ob_vector_index_async_task.cpp",
             "src/observer/vector_index/ob_vector_index_async_task_util.cpp",
             "src/observer/vector_index/ob_vector_index_i_task_executor.cpp",

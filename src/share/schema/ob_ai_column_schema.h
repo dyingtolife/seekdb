@@ -57,6 +57,8 @@ public:
     vector_dimension_ = 0;
     column_name_.reset();
     normalized_expr_.reset();
+    model_name_.reset();
+    input_expr_.reset();
     sync_mode_.reset();
     dependency_column_ids_.reset();
   }
@@ -64,16 +66,19 @@ public:
   int assign(common::ObIAllocator &allocator, const ObAiColumnSchema &other);
   int set_column_name(common::ObIAllocator &allocator, const common::ObString &value);
   int set_normalized_expr(common::ObIAllocator &allocator, const common::ObString &value);
+  int set_model_name(common::ObIAllocator &allocator, const common::ObString &value);
+  int set_input_expr(common::ObIAllocator &allocator, const common::ObString &value);
   int set_sync_mode(common::ObIAllocator &allocator, const common::ObString &value);
   int remap_column_ids(const common::hash::ObHashMap<uint64_t, uint64_t> &id_map);
   bool depends_on(uint64_t column_id) const;
 
   int64_t get_convert_size() const
   {
-    return column_name_.length() + normalized_expr_.length() + sync_mode_.length() + 3;
+    return column_name_.length() + normalized_expr_.length() + model_name_.length()
+        + input_expr_.length() + sync_mode_.length() + 5;
   }
 
-  TO_STRING_KV(K_(table_id), K_(column_id), K_(column_name),
+  TO_STRING_KV(K_(table_id), K_(column_id), K_(column_name), K_(model_name), K_(input_expr),
                K_(definition_version), K_(max_retries), K_(is_embedding),
                K_(vector_dimension), K_(state_column_id), K_(request_column_id),
                K_(result_spec_column_id), K_(sync_mode), K_(dependency_column_ids));
@@ -90,6 +95,8 @@ public:
   int64_t vector_dimension_;
   common::ObString column_name_;
   common::ObString normalized_expr_;
+  common::ObString model_name_;   // first argument of the model call
+  common::ObString input_expr_;   // second argument (input) of the model call
   common::ObString sync_mode_;
   common::ObSEArray<uint64_t, 4> dependency_column_ids_;
 };

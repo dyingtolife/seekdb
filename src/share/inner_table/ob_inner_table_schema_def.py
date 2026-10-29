@@ -2474,6 +2474,8 @@ all_ai_column_def = dict(
         ('state_column_id', 'int', 'false'),
         ('request_column_id', 'int', 'false'),
         ('result_spec_column_id', 'int', 'false'),
+        ('model_name', 'varchar:OB_MAX_COLUMN_NAME_LENGTH', 'false', ''),
+        ('input_expr', 'varchar:OB_MAX_LONGTEXT_LENGTH', 'true'),
         ('normalized_expr', 'varchar:OB_MAX_LONGTEXT_LENGTH', 'true')
     ]
 )
@@ -2502,7 +2504,10 @@ all_ai_column_task_def = dict(
         ('eligible_ts', 'timestamp:6', 'false'),
         ('definition_version', 'int', 'false', 0),
         ('status', 'varchar:16', 'false', 'PENDING'),
-        ('retries', 'int', 'false', 0)
+        ('retries', 'int', 'false', 0),
+        ('request_id', 'varchar:64', 'false', ''),
+        ('state', 'int', 'false', 0),
+        ('retry_count', 'int', 'false', 0)
     ]
 )
 def_table_schema(**all_ai_column_task_def)

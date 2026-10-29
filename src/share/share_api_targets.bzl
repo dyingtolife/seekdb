@@ -523,6 +523,7 @@ _SHARE_SEMANTIC_HEADER_TARGETS = {
     "schema_registry": struct(
         hdrs = [
             "schema/ob_ai_column_schema.h",
+            "schema/ob_ai_column_task_service.h",
             "schema/ob_ai_model_mgr.h",
             "schema/ob_mock_fk_parent_table_mgr.h",
             "schema/ob_outline_mgr.h",

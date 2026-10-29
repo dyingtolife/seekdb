@@ -2084,6 +2084,12 @@ OB_INLINE int ObBasicSessionInfo::process_session_variable(ObSysVarClassType var
       OX (sys_vars_cache_.set_foreign_key_checks(int_val));
       break;
     }
+    case SYS_VAR_AI_COLUMN_STRICT_READ: {
+      int64_t int_val = 0;
+      OZ (val.get_int(int_val), val);
+      OX (sys_vars_cache_.set_ai_column_strict_read(int_val));
+      break;
+    }
     case SYS_VAR_DEFAULT_PASSWORD_LIFETIME: {
       uint64_t uint_val = 0;
       OZ (val.get_uint64(uint_val), val);

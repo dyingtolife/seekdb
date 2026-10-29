@@ -10991,5 +10991,20 @@
     "info_cn": "",
     "background_cn": "",
     "ref_url": ""
+  },
+  "ai_column_strict_read": {
+    "id": 10755,
+    "name": "ai_column_strict_read",
+    "default_value": "0",
+    "base_value": "0",
+    "data_type": "bool",
+    "info": "when enabled, statements referencing AI columns error if any row of a referenced AI column is not READY",
+    "flags": "SESSION",
+    "min_val": "0",
+    "max_val": "1",
+    "publish_version": "1.0.0.0",
+    "info_cn": "",
+    "background_cn": "",
+    "ref_url": ""
   }
 }

@@ -36,6 +36,8 @@ OB_SERIALIZE_MEMBER(ObAiColumnSchema,
                     vector_dimension_,
                     column_name_,
                     normalized_expr_,
+                    model_name_,
+                    input_expr_,
                     sync_mode_,
                     dependency_column_ids_);
 
@@ -47,6 +49,16 @@ int ObAiColumnSchema::set_column_name(ObIAllocator &allocator, const ObString &v
 int ObAiColumnSchema::set_normalized_expr(ObIAllocator &allocator, const ObString &value)
 {
   return ob_write_string(allocator, value, normalized_expr_);
+}
+
+int ObAiColumnSchema::set_model_name(ObIAllocator &allocator, const ObString &value)
+{
+  return ob_write_string(allocator, value, model_name_);
+}
+
+int ObAiColumnSchema::set_input_expr(ObIAllocator &allocator, const ObString &value)
+{
+  return ob_write_string(allocator, value, input_expr_);
 }
 
 int ObAiColumnSchema::set_sync_mode(ObIAllocator &allocator, const ObString &value)
@@ -70,6 +82,8 @@ int ObAiColumnSchema::assign(ObIAllocator &allocator, const ObAiColumnSchema &ot
     vector_dimension_ = other.vector_dimension_;
     if (OB_FAIL(set_column_name(allocator, other.column_name_))) {
     } else if (OB_FAIL(set_normalized_expr(allocator, other.normalized_expr_))) {
+    } else if (OB_FAIL(set_model_name(allocator, other.model_name_))) {
+    } else if (OB_FAIL(set_input_expr(allocator, other.input_expr_))) {
     } else if (OB_FAIL(set_sync_mode(allocator, other.sync_mode_))) {
     } else if (OB_FAIL(dependency_column_ids_.assign(other.dependency_column_ids_))) {
       LOG_WARN("failed to assign ai column dependencies", K(ret));

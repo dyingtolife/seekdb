@@ -25,6 +25,7 @@
 #include "sql/das/ob_das_lock_op.h"
 #include "sql/das/ob_das_utils.h"
 #include "sql/engine/dml/ob_trigger_handler.h"
+#include "sql/engine/dml/ob_ai_column_dml.h"
 #include "share/autoincrement/ob_i_tablet_autoincrement_service.h"
 #include "data_plane/lob/ob_lob_read.h"
 #include "data_plane/transaction/ob_i_transaction_service.h"
@@ -630,6 +631,25 @@ int ObDMLService::process_insert_row(const ObInsCtDef &ins_ctdef,
                                       dml_op))) {
     } else if (OB_FAIL(check_filter_row(ins_ctdef, dml_op.get_eval_ctx(), is_skipped))) {
     }
+    // AI column linkage: capture the inserted row (rowkey = leading rowkey
+    // exprs of the new row). Capture after all row checks succeeded.
+    if (OB_SUCC(ret) && !is_skipped) {
+      if (dml_op.ai_dml_ctx_.has_ai_columns_
+          && ins_ctdef.das_ctdef_.rowkey_cnt_ > 0
+          && ins_ctdef.das_ctdef_.rowkey_cnt_ <= ins_ctdef.new_row_.count()) {
+        ExprFixedArray key_row;
+        for (int64_t ki = 0; ki < ins_ctdef.das_ctdef_.rowkey_cnt_; ++ki) {
+          if (OB_SUCCESS != key_row.push_back(ins_ctdef.new_row_.at(ki))) {
+            break;
+          }
+        }
+        int ai_ret = ObAiColumnDMLUtils::capture_row(
+            dml_op.get_eval_ctx(), key_row, dml_op.ai_dml_ctx_, false, NULL);
+        if (OB_SUCCESS != ai_ret) {
+          SQL_ENG_LOG(WARN, "ai column capture insert row failed", K(ai_ret));
+        }
+      }
+    }
 
   }
   return ret;
@@ -723,6 +743,21 @@ int ObDMLService::process_delete_row(const ObDelCtDef &del_ctdef,
       }
     }
 
+    if (OB_SUCC(ret) && !is_skipped && dml_op.ai_dml_ctx_.has_ai_columns_
+        && del_ctdef.das_ctdef_.rowkey_cnt_ > 0
+        && del_ctdef.das_ctdef_.rowkey_cnt_ <= del_ctdef.old_row_.count()) {
+      ExprFixedArray key_row;
+      for (int64_t ki = 0; ki < del_ctdef.das_ctdef_.rowkey_cnt_; ++ki) {
+        if (OB_SUCCESS != key_row.push_back(del_ctdef.old_row_.at(ki))) {
+          break;
+        }
+      }
+      int ai_ret = ObAiColumnDMLUtils::capture_row(
+          dml_op.get_eval_ctx(), key_row, dml_op.ai_dml_ctx_, true, NULL);
+      if (OB_SUCCESS != ai_ret) {
+        SQL_ENG_LOG(WARN, "ai column capture delete row failed", K(ai_ret));
+      }
+    }
     if (OB_SUCC(ret) && !is_skipped) {
       if (OB_FAIL(TriggerHandle::init_param_old_row(
         dml_op.get_eval_ctx(), del_ctdef.trig_ctdef_, del_rtdef.trig_rtdef_))) {
@@ -825,6 +860,82 @@ int ObDMLService::process_update_row(const ObUpdCtDef &upd_ctdef,
   if (OB_FAIL(ret)) {
   } else if (!is_skipped && upd_rtdef.has_table_cycle_) {
     ret = OB_ERR_ROW_IS_REFERENCED;
+  }
+
+  // AI column linkage: capture the updated row only when an AI column
+  // dependency column (or the rowkey) was assigned. Unrelated updates do not
+  // trigger regeneration. Direct assignment to AI result columns is rejected
+  // by the resolver before execution.
+  if (OB_SUCC(ret) && !is_skipped && upd_rtdef.is_row_changed_
+      && dml_op.ai_dml_ctx_.has_ai_columns_) {
+    bool touches_dependency = false;
+    for (int64_t a = 0; !touches_dependency && a < upd_ctdef.assign_columns_.count(); ++a) {
+      const ObString &assigned_name =
+          upd_ctdef.assign_columns_.at(a).column_name_;
+      for (int64_t di = 0; !touches_dependency && di < dml_op.ai_dml_ctx_.dependency_names_.count(); ++di) {
+        if (0 == assigned_name.case_compare(dml_op.ai_dml_ctx_.dependency_names_.at(di))) {
+          touches_dependency = true;
+        }
+      }
+    }
+    // A rowkey assignment is also a trigger (the row moves): capture with
+    // both old and new keys so the old-key tasks are dropped and new-key
+    // tasks are enqueued.
+    bool touches_rowkey = false;
+    for (int64_t a = 0; !touches_rowkey && a < upd_ctdef.assign_columns_.count(); ++a) {
+      const ObString &assigned_name =
+          upd_ctdef.assign_columns_.at(a).column_name_;
+      for (int64_t ki = 0; !touches_rowkey && ki < upd_ctdef.dupd_ctdef_.rowkey_cnt_
+               && ki < upd_ctdef.old_row_.count(); ++ki) {
+        // rowkey column names come from the ctdef column list; approximate by
+        // comparing the assignment names with the first rowkey columns via
+        // the schema-backed dependency list is not enough; the resolver
+        // records rowkey names in the ctx.
+        for (int64_t rn = 0; !touches_rowkey && rn < dml_op.ai_dml_ctx_.rowkey_names_.count(); ++rn) {
+          if (0 == assigned_name.case_compare(dml_op.ai_dml_ctx_.rowkey_names_.at(rn))) {
+            touches_rowkey = true;
+          }
+        }
+      }
+    }
+    if (touches_dependency || touches_rowkey) {
+      int64_t rowkey_cnt = upd_ctdef.dupd_ctdef_.rowkey_cnt_;
+      if (rowkey_cnt > 0 && rowkey_cnt <= upd_ctdef.old_row_.count()) {
+        ExprFixedArray key_row;
+        for (int64_t ki = 0; ki < rowkey_cnt; ++ki) {
+          if (OB_SUCCESS != key_row.push_back(upd_ctdef.old_row_.at(ki))) {
+            break;
+          }
+        }
+        int ai_ret = OB_SUCCESS;
+        if (touches_rowkey) {
+          // Build the NEW-key predicate from the new row when the key moved.
+          ExprFixedArray new_key_row;
+          for (int64_t ki = 0; ki < rowkey_cnt && ki < upd_ctdef.new_row_.count(); ++ki) {
+            if (OB_SUCCESS != new_key_row.push_back(upd_ctdef.new_row_.at(ki))) {
+              break;
+            }
+          }
+          ObIAllocator &alloc = dml_op.get_eval_ctx().exec_ctx_.get_allocator();
+          ObString new_pred;
+          if (OB_SUCCESS != (ai_ret = ObAiColumnDMLUtils::build_rowkey_predicate_from_exprs(
+                  dml_op.get_eval_ctx(), new_key_row, dml_op.ai_dml_ctx_.rowkey_names_,
+                  alloc, new_pred))) {
+            SQL_ENG_LOG(WARN, "build new key predicate failed", K(ai_ret));
+            ai_ret = OB_SUCCESS;
+          } else {
+            ai_ret = ObAiColumnDMLUtils::capture_row(
+                dml_op.get_eval_ctx(), key_row, dml_op.ai_dml_ctx_, false, &new_pred);
+          }
+        } else {
+          ai_ret = ObAiColumnDMLUtils::capture_row(
+              dml_op.get_eval_ctx(), key_row, dml_op.ai_dml_ctx_, false, NULL);
+        }
+        if (OB_SUCCESS != ai_ret) {
+          SQL_ENG_LOG(WARN, "ai column capture update row failed", K(ai_ret));
+        }
+      }
+    }
   }
 
   if (OB_SUCC(ret) && !is_skipped) {

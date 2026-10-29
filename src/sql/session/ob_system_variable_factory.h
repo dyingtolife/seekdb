@@ -856,6 +856,21 @@ public:
   inline virtual share::ObSysVarClassType get_type() const { return share::SYS_VAR_FOREIGN_KEY_CHECKS; }
   inline virtual const common::ObObj &get_global_default_value() const { return share::ObSysVariables::get_default_value(116); }
 };
+
+class ObSysVarAiColumnStrictRead : public ObBoolSysVar
+{
+  OB_UNIS_VERSION_V(1);
+public:
+  ObSysVarAiColumnStrictRead(common::ObIAllocator &alloc, common::ObObjType type, ObSysVarClassType sys_var_id,
+      share::ObSysVarScope scope, const char *name, const char *value_str,
+      const char *info, const char *flags, const char *min_val, const char *max_val,
+      const char *category, const char *class_group = "", const char *class_sub_group = "")
+    : ObBoolSysVar(alloc, type, sys_var_id, scope, name, value_str, info, flags, min_val, max_val, category, class_group, class_sub_group)
+  {}
+  virtual ~ObSysVarAiColumnStrictRead() {}
+  bool is_loaded_by_shell() const override { return false; }
+};
+
 class ObSysVarObTcpInvitedNodes : public ObVarcharSysVar
 {
 public:

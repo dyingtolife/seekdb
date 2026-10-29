@@ -30,6 +30,7 @@
 #include "sql/engine/cmd/ob_ddl_executor_util.h"
 #include "sql/resolver/ddl/ob_create_table_stmt.h"
 #include "sql/resolver/ddl/ob_alter_table_stmt.h"
+#include "sql/engine/dml/ob_ai_column_dml.h"
 #include "sql/resolver/ddl/ob_drop_table_stmt.h"
 #include "sql/resolver/ddl/ob_rename_table_stmt.h"
 #include "sql/resolver/ddl/ob_truncate_table_stmt.h"
@@ -763,6 +764,35 @@ int ObAlterTableExecutor::execute(ObExecContext &ctx, ObAlterTableStmt &stmt)
   OV (OB_NOT_NULL(task_exec_ctx = GET_SQL_EXECUTOR_CTX(ctx)), OB_NOT_INIT);
   if (OB_FAIL(ret)) {
     // do nothing
+  } else if (stmt.has_ai_retry()) {
+    // RETRY AI COLUMN: synchronous in-session execution. Select matched
+    // rowkeys (status pseudo column maps to the hidden state column),
+    // invalidate them and enqueue fresh tasks. Not a schema change.
+    ObSQLSessionInfo *my_session = ctx.get_my_session();
+    ObSchemaGetterGuard &guard = my_session->get_schema_guard();
+    const ObTableSchema *table_schema = NULL;
+    if (OB_FAIL(guard.get_table_schema(stmt.get_alter_table_arg().alter_table_schema_.get_table_id(),
+                                       table_schema))) {
+      SQL_LOG(WARN, "get table schema for ai retry failed", K(ret));
+    } else if (OB_ISNULL(table_schema)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (stmt.get_ai_retry_args().count() != 1) {
+      // RETRY targets exactly one AI column; grammar permits one per action,
+      // multiple actions rejected here like MySQL multi-action conflicts.
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "multiple RETRY AI COLUMN actions");
+    } else {
+      const ObAlterTableStmt::AiRetryArg &arg = stmt.get_ai_retry_args().at(0);
+      int64_t matched = 0;
+      if (OB_FAIL(ObAiColumnDMLUtils::retry_ai_column(ctx, *table_schema,
+                                                      arg.column_name_,
+                                                      arg.where_clause_,
+                                                      matched))) {
+        SQL_LOG(WARN, "retry ai column failed", K(ret), K(arg.column_name_));
+      } else {
+        SQL_LOG(INFO, "retry ai column done", K(matched), K(arg.column_name_));
+      }
+    }
   } else if (stmt.is_alter_triggers()) {
     if (stmt.get_tg_arg().trigger_infos_.count() > 0) {
       stmt.get_tg_arg().ddl_stmt_str_ = first_stmt;

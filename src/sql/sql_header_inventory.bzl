@@ -205,6 +205,7 @@ SQL_INTERFACE_CLOSURE_HEADERS = [
     "engine/dml/ob_dml_ctx_define.h",
     "engine/dml/ob_fk_checker.h",
     "engine/dml/ob_table_modify_op.h",
+    "engine/dml/ob_ai_column_dml.h",
     "engine/expr/ob_datum_cast.h",
     "engine/expr/ob_expr.h",
     "engine/expr/ob_expr_ai/ob_ai_func.h",

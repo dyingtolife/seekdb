@@ -8258,6 +8258,10 @@ int ObSysVarFactory::create_sys_var(ObIAllocator &allocator_, share::ObSysVarCla
       ret = create_one_sys_var<ObSysVarForeignKeyChecks>(allocator_, sys_var_ptr, "ObSysVarForeignKeyChecks");
       break;
     }
+    case share::SYS_VAR_AI_COLUMN_STRICT_READ: {
+      ret = create_one_sys_var<ObSysVarAiColumnStrictRead>(allocator_, sys_var_ptr, "ObSysVarAiColumnStrictRead");
+      break;
+    }
     case share::SYS_VAR_OB_TCP_INVITED_NODES: {
       ret = create_one_sys_var<ObSysVarObTcpInvitedNodes>(allocator_, sys_var_ptr, "ObSysVarObTcpInvitedNodes");
       break;
