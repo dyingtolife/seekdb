@@ -32,7 +32,7 @@ enum ObAiColumnTaskState
   AI_TASK_RETRY_WAIT = 3,
 };
 
-// Durable task queue over __all_ai_column_task (table id 1133).
+// Durable task queue over __all_ai_column_task (table id 1136).
 //
 // enqueue_* run INSIDE the user's DML transaction through the session inner
 // connection, so task rows commit/rollback atomically with the data change
