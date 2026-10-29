@@ -198,6 +198,7 @@ ObSchemaServiceSQLImpl::ObSchemaServiceSQLImpl(
       schema_info_(),
       sys_variable_service_(*this),
       ai_model_service_(*this),
+      ai_column_service_(*this),
       cluster_schema_status_(ObClusterSchemaStatus::NORMAL_STATUS),
       schema_service_(NULL),
       max_id_cache_(max_id_cache),

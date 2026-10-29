@@ -228,6 +228,11 @@ enum ObSchemaOperationCategory
   ACT(OB_DDL_ALTER_AI_MODEL, )                                   \
   ACT(OB_DDL_DROP_AI_MODEL, )                                    \
   ACT(OB_DDL_AI_MODEL_OPERATION_END, = 2120)                     \
+  ACT(OB_DDL_AI_COLUMN_OPERATION_BEGIN, = 2121)                  \
+  ACT(OB_DDL_CREATE_AI_COLUMN, )                                 \
+  ACT(OB_DDL_ALTER_AI_COLUMN, )                                  \
+  ACT(OB_DDL_DROP_AI_COLUMN, )                                   \
+  ACT(OB_DDL_AI_COLUMN_OPERATION_END, = 2130)                    \
   ACT(OB_DDL_OBJ_MYSQL_PRIV_OPERATION_BEGIN, = 2131)             \
   ACT(OB_DDL_GRANT_OBJ_MYSQL_PRIV, )                             \
   ACT(OB_DDL_DEL_OBJ_MYSQL_PRIV, )                               \
@@ -505,6 +510,7 @@ class ObErrorSqlService;
 //table schema service interface layer
 class ObServerSchemaService;
 class ObAiModelSqlService;
+class ObAiColumnSqlService;
 class ObSchemaService
 {
 public:
@@ -543,6 +549,7 @@ public:
   DECLARE_GET_DDL_SQL_SERVICE_FUNC(SysVariable, sys_variable);
   //DECLARE_GET_DDL_SQL_SERVICE_FUNC(sys_priv, priv);
   DECLARE_GET_DDL_SQL_SERVICE_FUNC(AiModel, ai_model);
+  DECLARE_GET_DDL_SQL_SERVICE_FUNC(AiColumn, ai_column);
 
   /* sequence_id related */
   virtual int init_sequence_id_by_sys_leader_epoch(const int64_t sys_leader_epoch) = 0;

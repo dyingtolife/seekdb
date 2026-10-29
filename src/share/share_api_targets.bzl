@@ -500,6 +500,7 @@ _SHARE_SEMANTIC_HEADER_TARGETS = {
     "schema_persistence": struct(
         hdrs = [
             "schema/ob_ai_model_sql_service.h",
+            "schema/ob_ai_column_sql_service.h",
             "schema/ob_database_sql_service.h",
             "schema/ob_ddl_sql_service.h",
             "schema/ob_outline_sql_service.h",
@@ -521,6 +522,7 @@ _SHARE_SEMANTIC_HEADER_TARGETS = {
     ),
     "schema_registry": struct(
         hdrs = [
+            "schema/ob_ai_column_schema.h",
             "schema/ob_ai_model_mgr.h",
             "schema/ob_mock_fk_parent_table_mgr.h",
             "schema/ob_outline_mgr.h",

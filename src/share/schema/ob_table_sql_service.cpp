@@ -19,6 +19,7 @@
 #include <inttypes.h>
 #include "lib/literals/ob_literals.h"
 #include "share/ob_global_stat_proxy.h"
+#include "share/schema/ob_ai_column_sql_service.h"
 #include "share/schema/ob_constraint.h"
 #include "share/schema/ob_partition_sql_helper.h"
 #include "share/ob_timezone_mgr.h"
@@ -704,6 +705,15 @@ int ObTableSqlService::drop_table(const ObTableSchema &table_schema,
     } else if (OB_FAIL(delete_from_all_column_usage(sql_client, table_id))) {
     } else if (OB_FAIL(delete_from_all_monitor_modified(sql_client, table_id))) {
     } else if (OB_FAIL(delete_from_all_optstat_user_prefs(sql_client, table_id))) {
+    }
+  }
+
+  // delete AI column metadata of the dropped table.
+  if (OB_SUCC(ret) && table_schema.get_ai_column_count() > 0) {
+    if (OB_FAIL(schema_service_.get_ai_column_sql_service().drop_ai_columns(
+            table_id, new_schema_version,
+            ddl_stmt_str ? *ddl_stmt_str : ObString(), sql_client))) {
+      LOG_WARN("failed to drop ai column metadata", K(ret), K(table_id));
     }
   }
 

@@ -59,7 +59,9 @@ enum NUMCHILD {
   COLUMN_DEFINITION_NUM_CHILD = 4,
   COLUMN_DEF_NUM_CHILD = 3,
   INDEX_NUM_CHILD = 5,
-  GEN_COLUMN_DEFINITION_NUM_CHILD = 7
+  GEN_COLUMN_DEFINITION_NUM_CHILD = 7,
+  // AI column: [col_ref, type, attrs, pos, T_AI_COLUMN_DEF]
+  AI_COLUMN_DEFINITION_NUM_CHILD = 5
 };
 
 struct ObColumnResolveStat
@@ -558,6 +560,16 @@ protected:
   int resolve_lob_chunk_size(const ParseNode &size_node, int64_t &lob_chunk_size);
   int resolve_lob_chunk_size(share::schema::ObColumnSchemaV2 &column, const ParseNode &lob_chunk_size_node);
   int resolve_semistruct_encoding_type(const ParseNode *option_node, const bool is_index_option);
+
+  // AI COLUMN (...) clause on a column definition. Validates the expression
+  // root, collects referenced columns into the AI column schema entry and
+  // records the WITH (...) config. The entry is attached to the resolved
+  // table schema by the create-table / add-column resolvers.
+  int resolve_ai_column_definition(
+      share::schema::ObColumnSchemaV2 &column,
+      ParseNode *ai_def_node,
+      const share::schema::ObTableSchema &table_schema,
+      share::schema::ObAiColumnSchema &ai_column);
   /*
   int resolve_generated_column_definition(
       share::schema::ObColumnSchemaV2 &column,

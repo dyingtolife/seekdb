@@ -16,6 +16,7 @@
 
 #define USING_LOG_PREFIX RS
 #include "rootserver/parallel_ddl/ob_table_helper.h"
+#include "share/schema/ob_ai_column_sql_service.h"
 #include "rootserver/ob_index_builder.h"
 #include "rootserver/ob_lob_meta_builder.h"
 #include "rootserver/ob_lob_piece_builder.h"
@@ -210,6 +211,18 @@ int ObTableHelper::create_tables_(const ObString *ddl_stmt_str)
                 get_trans_(),
                 ddl_stmt_str,
                 true/*sync_schema_version_for_last_table*/))) {
+    } else {
+      // AI columns: persist one __all_ai_column row (+ history) per AI
+      // column declared by any created table, in the same transaction.
+      for (int64_t i = 0; OB_SUCC(ret) && i < new_tables_.count(); ++i) {
+        ObTableSchema &new_table = new_tables_.at(i);
+        if (new_table.get_ai_column_count() > 0
+            && OB_FAIL(schema_service_impl->get_ai_column_sql_service().create_ai_columns(
+                   new_table, get_trans_()))) {
+          LOG_WARN("failed to persist ai column metadata", K(ret),
+                   K(new_table.get_table_id()));
+        }
+      }
     }
   }
   return ret;

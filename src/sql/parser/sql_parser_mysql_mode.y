@@ -311,7 +311,7 @@ END_P SET_VAR DELIMITER
         MAJOR MAP MANHATTAN MANUAL MASTER MASTER_AUTO_POSITION MASTER_CONNECT_RETRY MASTER_DELAY MASTER_HEARTBEAT_PERIOD
         MASTER_HOST MASTER_LOG_FILE MASTER_LOG_POS MASTER_PASSWORD MASTER_PORT MASTER_RETRY_COUNT
         MASTER_SERVER_ID MASTER_SSL MASTER_SSL_CA MASTER_SSL_CAPATH MASTER_SSL_CERT MASTER_SSL_CIPHER
-        MASTER_SSL_CRL MASTER_SSL_CRLPATH MASTER_SSL_KEY MASTER_USER MAX MAX_CONNECTIONS_PER_HOUR
+        MASTER_SSL_CRL MASTER_SSL_CRLPATH MASTER_SSL_KEY MASTER_USER MAX MAX_CONNECTIONS_PER_HOUR MAX_RETRIES
         MAX_FILE_SIZE MAX_TOKEN_SIZE MAX_NGRAM_SIZE LOG_DISK_SIZE MAX_QUERIES_PER_HOUR MAX_ROWS MAX_SIZE
         MAX_UPDATES_PER_HOUR MAX_USER_CONNECTIONS MEDIUM MEMORY MEMTABLE MESSAGE_TEXT META MICROSECOND
         MIN MIN_MAX MIN_NGRAM_SIZE MIN_TOKEN_SIZE MINOR MIN_ROWS MINUS MINUTE MISMATCH MODE
@@ -342,7 +342,7 @@ END_P SET_VAR DELIMITER
 
         SAMPLE SAVEPOINT SCALARS SCHEMA_NAME SCN SCOPE SCORE SECOND SECURITY SEED
         SEMISTRUCT_ENCODING_TYPE SERIAL SERIALIZABLE SESSION SESSION_USER SET_TP SHARE SHARED SHUTDOWN SIGNED
-        SIMPLE SINGLE SKIP_INDEX SLAVE SLOW SLOT_IDX SNAPSHOT SOME SOUNDS SOURCE
+        SIMPLE SINGLE SKIP_INDEX SLAVE SLOW SLOT_IDX SNAPSHOT SOME SOUNDS SOURCE SYNC_MODE
         SPFILE SPLIT SQL_AFTER_GTIDS SQL_AFTER_MTS_GAPS SQL_BEFORE_GTIDS SQL_BUFFER_RESULT SQL_CACHE SQL_NO_CACHE SQL_ID SCHEMA_ID
         SQL_THREAD SQL_TSI_DAY SQL_TSI_HOUR SQL_TSI_MINUTE SQL_TSI_MONTH SQL_TSI_QUARTER SQL_TSI_SECOND SQL_TSI_WEEK SQL_TSI_YEAR SRID _ST_ASMVT
         STANDBY STAT START STARTS STATS_AUTO_RECALC STATS_PERSISTENT STATS_SAMPLE_PAGES STATUS STATEMENTS STATISTICS
@@ -423,6 +423,7 @@ END_P SET_VAR DELIMITER
 %type <node> opt_equal_mark opt_default_mark read_only_or_write not not2
 %type <node> int_or_decimal
 %type <node> opt_column_attribute_list column_attribute column_attribute_list opt_column_default_value opt_column_default_value_list
+%type <node> opt_with_ai_config ai_config_list ai_config_item
 %type <node> show_stmt from_or_in columns_or_fields database_or_schema index_or_indexes_or_keys opt_from_or_in_database_clause opt_show_condition opt_desc_column_option opt_status opt_storage opt_show_engine check_table_options check_table_option
 %type <node> prepare_stmt stmt_name preparable_stmt
 %type <node> variable_set_stmt var_and_val_list var_and_val to_or_eq set_expr_or_default sys_var_and_val
@@ -4844,6 +4845,20 @@ column_definition_ref data_type opt_column_attribute_list opt_column_reference o
   set_data_type_collation($2, attributes, false, true);
   malloc_non_terminal_node($$, result->malloc_pool_, T_COLUMN_DEFINITION, 4, $1, $2, attributes, $5);
 }
+| column_definition_ref data_type opt_column_attribute_list AI COLUMN '(' expr ')' opt_with_ai_config opt_column_reference opt_position_column
+{
+  /* AI column: children[0..3] keep the normal shape, children[4] carries the
+     T_AI_COLUMN_DEF (expr text + WITH config). Column reference and position
+     stay supported so ALTER TABLE ... ADD ... AFTER works. */
+  (void)($10);
+  ParseNode *attributes = NULL;
+  ParseNode *ai_def = NULL;
+  merge_nodes(attributes, result, T_COLUMN_ATTRIBUTES, $3);
+  set_data_type_collation($2, attributes, false, true);
+  dup_expr_string($7, result, @7.first_column, @7.last_column);
+  malloc_non_terminal_node(ai_def, result->malloc_pool_, T_AI_COLUMN_DEF, 2, $7, $9);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_COLUMN_DEFINITION, 5, $1, $2, attributes, $11, ai_def);
+}
 | column_definition_ref data_type opt_collation opt_generated_keyname AS '(' expr ')' opt_storage_type opt_generated_column_attribute_list opt_column_reference opt_position_column
 {
   (void)($11);
@@ -4878,6 +4893,43 @@ column_definition_ref data_type opt_column_attribute_list opt_column_reference o
   malloc_non_terminal_node(attributes, result->malloc_pool_, T_LINK_NODE, 2, attributes, unique_attr);
   merge_nodes(attributes, result, T_COLUMN_ATTRIBUTES, attributes);
   malloc_non_terminal_node($$, result->malloc_pool_, T_COLUMN_DEFINITION, 4, $1, unsigned_bigint_type, attributes, $4);
+}
+;
+
+opt_with_ai_config:
+WITH '(' ai_config_list ')'
+{
+  $$ = $3;
+}
+| /*empty*/
+{
+  $$ = NULL;
+}
+;
+
+ai_config_list:
+ai_config_list ',' ai_config_item
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3);
+}
+| ai_config_item
+{
+  $$ = $1;
+}
+;
+
+ai_config_item:
+SYNC_MODE '=' STRING_VALUE
+{
+  ParseNode *value = $3;
+  malloc_non_terminal_node($$, result->malloc_pool_, T_AI_CONFIG_ITEM, 2, NULL, value);
+  $$->value_ = AI_CONFIG_SYNC_MODE;
+}
+| MAX_RETRIES '=' INTNUM
+{
+  ParseNode *value = $3;
+  malloc_non_terminal_node($$, result->malloc_pool_, T_AI_CONFIG_ITEM, 2, NULL, value);
+  $$->value_ = AI_CONFIG_MAX_RETRIES;
 }
 ;
 
@@ -16692,6 +16744,21 @@ NAME_OB '=' literal
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_EXPR_LIST, 2, $1, $3);
 }
+| NAME_OB
+{
+  /* bare flag, e.g. `header` in COPY options: value omitted */
+  malloc_non_terminal_node($$, result->malloc_pool_, T_EXPR_LIST, 1, $1);
+}
+| NAME_OB NAME_OB
+{
+  /* keyword value, e.g. `format csv` */
+  malloc_non_terminal_node($$, result->malloc_pool_, T_EXPR_LIST, 2, $1, $2);
+}
+| NAME_OB '=' NAME_OB
+{
+  /* `format = csv` */
+  malloc_non_terminal_node($$, result->malloc_pool_, T_EXPR_LIST, 2, $1, $3);
+}
 ;
 
 file_table_func_name:
@@ -17621,6 +17688,8 @@ ACCOUNT
 |       AUTOEXTEND_SIZE
 |       AUTO_INCREMENT
 |       AUTO_INCREMENT_CACHE_SIZE
+|       SYNC_MODE
+|       MAX_RETRIES
 |       AUTO_REFRESH
 |       AVG
 |       AVG_ROW_LENGTH

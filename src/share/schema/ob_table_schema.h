@@ -43,6 +43,7 @@
 #include "share/ob_define.h"
 #include "share/schema/ob_schema_struct.h"
 #include "share/schema/ob_trigger_info.h"
+#include "share/schema/ob_ai_column_schema.h"
 #include "lib/compress/ob_compress_util.h"
 namespace oceanbase
 {
@@ -1090,6 +1091,14 @@ public:
   void clear_constraint();
   int set_index_params(const common::ObString &index_params) { return deep_copy_str(index_params, index_params_); }
   int set_exec_env(const common::ObString &exec_env) { return deep_copy_str(exec_env, exec_env_); }
+  // AI column definitions attached to this table. Empty for tables without
+  // AI COLUMN (...) clauses. The hidden state/request/result-spec columns are
+  // regular (invisible) columns; their ids are recorded inside each entry.
+  int add_ai_column_schema(const ObAiColumnSchema &ai_column);
+  int get_ai_column_schemas(common::ObIArray<ObAiColumnSchema> &ai_columns) const;
+  int64_t get_ai_column_count() const { return ai_columns_.count(); }
+  const common::ObIArray<ObAiColumnSchema> &get_ai_columns() const { return ai_columns_; }
+  common::ObIArray<ObAiColumnSchema> &get_ai_columns() { return ai_columns_; }
   void set_lob_inrow_threshold(const int64_t lob_inrow_threshold) { lob_inrow_threshold_ = lob_inrow_threshold;}
   inline void set_auto_increment_cache_size(const int64_t auto_increment_cache_size)
   { auto_increment_cache_size_ = auto_increment_cache_size; }
@@ -1662,6 +1671,7 @@ protected:
   // exec_env
   common::ObString exec_env_;
   ObSemiStructEncodingType semistruct_encoding_type_;
+  common::ObArray<ObAiColumnSchema> ai_columns_;
 };
 
 class ObPrintableTableSchema final : public ObTableSchema

@@ -33,6 +33,7 @@
 #include "share/schema/ob_trigger_sql_service.h"
 #include "share/schema/ob_sys_variable_sql_service.h"
 #include "share/schema/ob_ai_model_sql_service.h"
+#include "share/schema/ob_ai_column_sql_service.h"
 #include "lib/string/ob_string.h"
 
 namespace oceanbase
@@ -100,6 +101,7 @@ public:
   GET_DDL_SQL_SERVICE_FUNC(Trigger, trigger)
   GET_DDL_SQL_SERVICE_FUNC(SysVariable, sys_variable)
   GET_DDL_SQL_SERVICE_FUNC(AiModel, ai_model)
+  GET_DDL_SQL_SERVICE_FUNC(AiColumn, ai_column)
 
   /* sequence_id related */
   virtual int init_sequence_id_by_sys_leader_epoch(const int64_t sys_leader_epoch);
@@ -888,6 +890,7 @@ private:
 
   ObSysVariableSqlService sys_variable_service_;
   ObAiModelSqlService ai_model_service_;
+  ObAiColumnSqlService ai_column_service_;
 
   ObClusterSchemaStatus cluster_schema_status_;
   const ObServerSchemaService *schema_service_;

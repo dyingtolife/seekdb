@@ -69,6 +69,7 @@
 #include "rootserver/ob_create_index_on_empty_table_helper.h"
 #include "share/schema/ob_schema_guard_wrapper.h"  // relocated-definition owner
 #include "share/schema/ob_table_sql_service.h"
+#include "share/schema/ob_ai_column_sql_service.h"
 #include "share/schema/ob_ddl_trans_controller.h"  // relocated-definition owner
 #include "share/schema/ob_part_mgr_util.h"
 #include "lib/stat/ob_diagnostic_info_guard.h"
@@ -7827,6 +7828,105 @@ int ObDDLService::add_new_column_to_table_schema(
       if (update_inner_table) {
         if (OB_FAIL(ddl_operator->insert_single_column(*trans,
                 new_table_schema, alter_column_schema))) {
+        }
+      }
+      // AI columns: after the user column id is final, materialize the
+      // three hidden bookkeeping columns (<col>_state/_request/
+      // _result_spec) and persist the __all_ai_column metadata row in the
+      // same transaction. The resolver attaches the ObAiColumnSchema
+      // entry to the alter statement's table schema.
+      if (OB_SUCC(ret) && alter_column_schema.is_ai_column()) {
+        const ObIArray<ObAiColumnSchema> &ai_columns =
+            alter_table_schema.get_ai_columns();
+        ObAiColumnSchema *ai_entry = NULL;
+        for (int64_t i = 0; NULL == ai_entry && i < ai_columns.count(); ++i) {
+          if (ai_columns.at(i).column_name_.case_compare(
+                  alter_column_schema.get_column_name_str()) == 0) {
+            ai_entry = &const_cast<ObAiColumnSchema &>(ai_columns.at(i));
+          }
+        }
+        if (OB_ISNULL(ai_entry)) {
+          ret = OB_ERR_UNEXPECTED;
+          RS_LOG(WARN, "ai column flag set without ai column entry", K(ret),
+                 K(alter_column_schema.get_column_name_str()));
+        } else {
+          ai_entry->table_id_ = new_table_schema.get_table_id();
+          ai_entry->column_id_ = alter_column_schema.get_column_id();
+          if (OB_ISNULL(ai_entry->column_name_.ptr())
+              || 0 == ai_entry->column_name_.length()) {
+            ObString name_copy;
+            if (OB_FAIL(ob_write_string(allocator,
+                    alter_column_schema.get_column_name_str(), name_copy))) {
+              RS_LOG(WARN, "failed to copy ai column name", K(ret));
+            } else {
+              ai_entry->column_name_ = name_copy;
+            }
+          }
+          // Hidden bookkeeping columns, only when the resolver did not
+          // already create them (CREATE TABLE path does).
+          if (OB_SUCC(ret) && common::OB_INVALID_ID == ai_entry->state_column_id_) {
+            const ObString user_name = alter_column_schema.get_column_name_str();
+            const char *suffixes[] = {"_state", "_request", "_result_spec"};
+            const ObObjType types[] = {ObVarcharType, ObVarcharType, ObVarcharType};
+            const int32_t lengths[] = {16, 4096, 1024};
+            uint64_t *id_slots[] = {&ai_entry->state_column_id_,
+                                    &ai_entry->request_column_id_,
+                                    &ai_entry->result_spec_column_id_};
+            int64_t max_used_column_id = new_table_schema.get_max_used_column_id();
+            for (int64_t j = 0; OB_SUCC(ret) && j < 3; ++j) {
+              char col_name[OB_MAX_COLUMN_NAME_LENGTH + 1];
+              int64_t pos = 0;
+              if (OB_FAIL(databuff_printf(col_name, sizeof(col_name), pos, "%.*s%s",
+                                          user_name.length(), user_name.ptr(),
+                                          suffixes[j]))) {
+                RS_LOG(WARN, "build ai hidden column name failed", K(ret));
+              } else {
+                ObColumnSchemaV2 hidden_col;
+                hidden_col.set_table_id(new_table_schema.get_table_id());
+                hidden_col.set_column_id(++max_used_column_id);
+                hidden_col.set_rowkey_position(0);
+                hidden_col.set_index_position(0);
+                hidden_col.set_tbl_part_key_pos(0);
+                hidden_col.set_is_hidden(true);
+                hidden_col.add_column_flag(INVISIBLE_COLUMN_FLAG);
+                hidden_col.set_nullable(true);
+                hidden_col.set_data_type(types[j]);
+                hidden_col.set_data_length(lengths[j]);
+                hidden_col.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+                hidden_col.set_prev_column_id(UINT64_MAX);
+                hidden_col.set_next_column_id(UINT64_MAX);
+                if (OB_FAIL(hidden_col.set_column_name(
+                        ObString(static_cast<int32_t>(pos), col_name)))) {
+                  RS_LOG(WARN, "set ai hidden column name failed", K(ret));
+                } else if (OB_FAIL(new_table_schema.add_column(hidden_col))) {
+                  RS_LOG(WARN, "add ai hidden column failed", K(ret));
+                } else {
+                  *id_slots[j] = hidden_col.get_column_id();
+                  new_table_schema.set_max_used_column_id(max_used_column_id);
+                  if (update_inner_table
+                      && OB_FAIL(ddl_operator->insert_single_column(*trans,
+                              new_table_schema, hidden_col))) {
+                    RS_LOG(WARN, "persist ai hidden column failed", K(ret));
+                  }
+                }
+              }
+            }
+          }
+          // Persist the __all_ai_column metadata row.
+          if (OB_SUCC(ret) && update_inner_table) {
+            ObSchemaService *svc = NULL;
+            if (OB_ISNULL(svc = schema_service_->get_schema_service())) {
+              ret = OB_ERR_UNEXPECTED;
+              RS_LOG(WARN, "schema service null", K(ret));
+            } else if (OB_FAIL(svc->get_ai_column_sql_service().create_ai_column(
+                    *ai_entry,
+                    new_table_schema.get_table_id(),
+                    new_table_schema.get_schema_version(),
+                    ObString() /* ddl stmt text not plumbed to this fn */,
+                    *trans))) {
+              RS_LOG(WARN, "failed to persist ai column row", K(ret));
+            }
+          }
         }
       }
     }

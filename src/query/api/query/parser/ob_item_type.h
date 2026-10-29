@@ -2277,8 +2277,18 @@ typedef enum ObItemType
   T_DIFF_TABLE = 4918,
   T_MERGE_TABLE = 4919,
   T_FLUSH_PRIVILEGES = 4920,
+  T_AI_COLUMN_DEF = 4921,
+  T_AI_CONFIG_ITEM = 4922,
   T_MAX //Attention: add a new type before T_MAX
 } ObItemType;
+
+// AI column WITH (...) config item kinds. Kept next to ObItemType because the
+// bison actions reference them directly.
+enum ObAiColumnConfigType
+{
+  AI_CONFIG_SYNC_MODE = 0,
+  AI_CONFIG_MAX_RETRIES = 1,
+};
 
 typedef enum ObOutlineType
 {

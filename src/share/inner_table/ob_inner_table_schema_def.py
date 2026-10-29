@@ -2447,10 +2447,72 @@ all_ai_model_endpoint_def = dict(
 def_table_schema(**all_ai_model_endpoint_def)
 
 
+# AI column definition metadata. One row per user column that carries an
+# AI COLUMN (...) clause. The hidden state/request/result-spec columns are
+# regular hidden columns of the data table; their ids are recorded here so
+# the AI worker can update them without re-parsing the expression.
+all_ai_column_def = dict(
+    owner = 'seekdb',
+    table_name = '__all_ai_column',
+    table_id = '1131',
+    table_type = 'SYSTEM_TABLE',
+    gm_columns = ['gmt_create', 'gmt_modified'],
+    rowkey_columns = [
+      ('table_id', 'int'),
+      ('column_id', 'int')
+    ],
+
+    is_cluster_private = False,
+    meta_record_in_sys = False,
+    normal_columns = [
+        ('column_name', 'varchar:OB_MAX_COLUMN_NAME_LENGTH', 'false'),
+        ('definition_version', 'int', 'false', 0),
+        ('sync_mode', 'varchar:16', 'false', 'async'),
+        ('max_retries', 'int', 'false', 0),
+        ('is_embedding', 'int', 'false', 0),
+        ('vector_dimension', 'int', 'false', 0),
+        ('state_column_id', 'int', 'false'),
+        ('request_column_id', 'int', 'false'),
+        ('result_spec_column_id', 'int', 'false'),
+        ('normalized_expr', 'varchar:OB_MAX_LONGTEXT_LENGTH', 'true')
+    ]
+)
+def_table_schema(**all_ai_column_def)
+def_table_schema(**gen_history_table_def(1132, all_ai_column_def))
+
+# AI column background task queue. Workers claim rows, call the model, and
+# publish results into the hidden result columns; test suites assert on the
+# task_count / rowkey_predicate / eligible_ts columns.
+all_ai_column_task_def = dict(
+    owner = 'seekdb',
+    table_name = '__all_ai_column_task',
+    table_id = '1133',
+    table_type = 'SYSTEM_TABLE',
+    gm_columns = ['gmt_create', 'gmt_modified'],
+    rowkey_columns = [
+      ('table_id', 'int'),
+      ('task_id', 'int')
+    ],
+
+    is_cluster_private = False,
+    meta_record_in_sys = False,
+    normal_columns = [
+        ('column_id', 'int', 'false'),
+        ('rowkey_predicate', 'varchar:OB_MAX_LONGTEXT_LENGTH', 'false'),
+        ('eligible_ts', 'timestamp:6', 'false'),
+        ('definition_version', 'int', 'false', 0),
+        ('status', 'varchar:16', 'false', 'PENDING'),
+        ('retries', 'int', 'false', 0)
+    ]
+)
+def_table_schema(**all_ai_column_task_def)
+def_table_schema(**gen_history_table_def(1134, all_ai_column_task_def))
+
+
 all_objauth_mysql_def = dict(
     owner = 'cjl476581',
     table_name     = '__all_objauth_mysql',
-    table_id       = '1133',
+    table_id       = '1135',
     table_type = 'SYSTEM_TABLE',
     gm_columns = ['gmt_create', 'gmt_modified'],
     rowkey_columns = [
@@ -2465,7 +2527,7 @@ all_objauth_mysql_def = dict(
   ]
   )
 def_table_schema(**all_objauth_mysql_def)
-def_table_schema(**gen_history_table_def(1134, all_objauth_mysql_def))
+def_table_schema(**gen_history_table_def(1136, all_objauth_mysql_def))
 
 
 # Reserved position (placeholder before this line)

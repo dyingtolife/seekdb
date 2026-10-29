@@ -1329,6 +1329,16 @@ int ObTableSchema::assign(const ObTableSchema &src_schema)
     semistruct_encoding_type_ = src_schema.semistruct_encoding_type_;
   }
 
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(ai_columns_.reserve(src_schema.ai_columns_.count()))) {
+    } else {
+      for (int64_t i = 0; OB_SUCC(ret) && i < src_schema.ai_columns_.count(); ++i) {
+        if (OB_FAIL(add_ai_column_schema(src_schema.ai_columns_.at(i)))) {
+        }
+      }
+    }
+  }
+
   if (OB_FAIL(ret)) {
   }
   return ret;
@@ -5344,6 +5354,31 @@ bool ObTableSchema::same_subpartitions(const ObTableSchema &other) const
   return bret;
 }*/
 
+
+int ObTableSchema::add_ai_column_schema(const ObAiColumnSchema &ai_column)
+{
+  int ret = OB_SUCCESS;
+  ObAiColumnSchema tmp;
+  common::ObIAllocator *allocator = get_allocator();
+  if (OB_ISNULL(allocator)) {
+    ret = OB_NOT_INIT;
+  } else if (OB_FAIL(tmp.assign(*allocator, ai_column))) {
+  } else if (OB_FAIL(ai_columns_.push_back(tmp))) {
+    tmp.reset();
+  }
+  return ret;
+}
+
+int ObTableSchema::get_ai_column_schemas(common::ObIArray<ObAiColumnSchema> &ai_columns) const
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; OB_SUCC(ret) && i < ai_columns_.count(); ++i) {
+    if (OB_FAIL(ai_columns.push_back(ai_columns_.at(i)))) {
+    }
+  }
+  return ret;
+}
+
 OB_DEF_SERIALIZE(ObTableSchema)
 {
   int ret = OB_SUCCESS;
@@ -5433,6 +5468,7 @@ OB_DEF_SERIALIZE(ObTableSchema)
   OB_UNIS_ENCODE(parser_properties_);
   OB_UNIS_ENCODE(semistruct_encoding_type_);
   OB_UNIS_ENCODE(micro_block_format_version_);
+  OB_UNIS_ENCODE(ai_columns_);
   // !!! end static check
   /*
    * Add deserialized members before this end static check comment
@@ -5636,6 +5672,7 @@ OB_DEF_DESERIALIZE(ObTableSchema)
   OB_UNIS_DECODE_AND_FUNC(parser_properties_, deep_copy_str);
   OB_UNIS_DECODE(semistruct_encoding_type_);
   OB_UNIS_DECODE(micro_block_format_version_);
+  OB_UNIS_DECODE(ai_columns_);
   // !!! end static check
   /*
    * Add deserialized members before this end static check comment
@@ -5746,6 +5783,7 @@ OB_DEF_SERIALIZE_SIZE(ObTableSchema)
   OB_UNIS_ADD_LEN(parser_properties_);
   OB_UNIS_ADD_LEN(semistruct_encoding_type_);
   OB_UNIS_ADD_LEN(micro_block_format_version_);
+  OB_UNIS_ADD_LEN(ai_columns_);
   // !!! end static check
   /*
    * Add deserialized members before this end static check comment

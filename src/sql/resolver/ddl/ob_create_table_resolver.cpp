@@ -937,6 +937,62 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
           table_schema.set_autoinc_column_id(autoinc_column_id);
         }
       }
+      if (OB_SUCC(ret)) {
+        // AI columns: create the three hidden bookkeeping columns
+        // (<col>_state, <col>_request, <col>_result_spec) and record their
+        // ids in the AI column schema entry.
+        ObIArray<ObAiColumnSchema> &ai_columns =
+            const_cast<ObIArray<ObAiColumnSchema> &>(table_schema.get_ai_columns());
+        for (int64_t i = 0; OB_SUCC(ret) && i < ai_columns.count(); ++i) {
+          ObAiColumnSchema &ai_col = ai_columns.at(i);
+          const ObColumnSchemaV2 *ai_user_col =
+              table_schema.get_column_schema(ai_col.column_id_);
+          if (OB_ISNULL(ai_user_col)) {
+            ret = OB_ERR_UNEXPECTED;
+            SQL_RESV_LOG(WARN, "ai column user column missing", K(ret), K(ai_col.column_id_));
+          } else {
+            const ObString user_name = ai_user_col->get_column_name_str();
+            const ObString suffixes[] = {"_state", "_request", "_result_spec"};
+            const ObObjType types[] = {ObVarcharType, ObVarcharType, ObVarcharType};
+            const int32_t lengths[] = {16, 4096, 1024};
+            uint64_t *id_slots[] = {&ai_col.state_column_id_,
+                                    &ai_col.request_column_id_,
+                                    &ai_col.result_spec_column_id_};
+            for (int64_t j = 0; OB_SUCC(ret) && j < 3; ++j) {
+              char col_name[OB_MAX_COLUMN_NAME_LENGTH + 1];
+              int64_t pos = 0;
+              if (OB_FAIL(databuff_printf(col_name, sizeof(col_name), pos, "%.*s%s",
+                                          user_name.length(), user_name.ptr(),
+                                          suffixes[j]))) {
+                SQL_RESV_LOG(WARN, "build ai hidden column name failed", K(ret));
+              } else {
+                ObColumnSchemaV2 hidden_col;
+                hidden_col.set_table_id(table_schema.get_table_id());
+                hidden_col.set_column_id(gen_column_id());
+                hidden_col.set_rowkey_position(0);
+                hidden_col.set_index_position(0);
+                hidden_col.set_tbl_part_key_pos(0);
+                hidden_col.set_is_hidden(true);
+                hidden_col.add_column_flag(INVISIBLE_COLUMN_FLAG);
+                hidden_col.set_nullable(true);
+                hidden_col.set_data_type(types[j]);
+                hidden_col.set_data_length(lengths[j]);
+                hidden_col.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+                hidden_col.set_prev_column_id(UINT64_MAX);
+                hidden_col.set_next_column_id(UINT64_MAX);
+                if (OB_FAIL(hidden_col.set_column_name(ObString(static_cast<int32_t>(pos), col_name)))) {
+                  SQL_RESV_LOG(WARN, "set ai hidden column name failed", K(ret));
+                } else if (OB_FAIL(table_schema.add_column(hidden_col))) {
+                  SQL_RESV_LOG(WARN, "add ai hidden column failed", K(ret));
+                } else {
+                  *id_slots[j] = hidden_col.get_column_id();
+                  table_schema.set_max_used_column_id(cur_column_id_);
+                }
+              }
+            }
+          }
+        }
+      }
     }
 
     if (OB_SUCC(ret)) {
