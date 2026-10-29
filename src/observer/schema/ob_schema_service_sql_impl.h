@@ -738,12 +738,13 @@ private:
                            common::ObISQLClient &sql_client,
                            ObTableSchema *&table_schema);
 
-  template<typename TABLE_SCHEMA>
   int fetch_ai_column_info(const ObRefreshSchemaStatus &schema_status,
                            const uint64_t table_id,
                            const int64_t schema_version,
                            common::ObISQLClient &sql_client,
+                           common::ObIAllocator &allocator,
                            ObTableSchema &table_schema);
+  template<typename TABLE_SCHEMA>
   int fetch_foreign_key_info(const ObRefreshSchemaStatus &schema_status,
                              const uint64_t table_id,
                              const int64_t schema_version,

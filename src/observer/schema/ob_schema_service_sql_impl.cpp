@@ -4102,7 +4102,7 @@ int ObSchemaServiceSQLImpl::get_not_core_table_schema(
   }
   if (OB_SUCC(ret) && !is_schema_fetch_dependency
       && OB_FAIL(fetch_ai_column_info(schema_status, table_id, schema_version,
-                                      sql_client, *table_schema))) {
+                                      sql_client, allocator, *table_schema))) {
   }
   return ret;
 }
@@ -4823,12 +4823,12 @@ int ObSchemaServiceSQLImpl::fetch_foreign_key_array_for_simple_table_schemas(
   return ret;
 }
 
-template <typename T>
 int ObSchemaServiceSQLImpl::fetch_ai_column_info(
     const ObRefreshSchemaStatus &schema_status,
     const uint64_t table_id,
     const int64_t schema_version,
     common::ObISQLClient &sql_client,
+    common::ObIAllocator &allocator,
     ObTableSchema &table_schema)
 {
   int ret = OB_SUCCESS;
@@ -4855,7 +4855,11 @@ int ObSchemaServiceSQLImpl::fetch_ai_column_info(
       ObArray<ObAiColumnSchema> ai_columns;
       ObArray<uint64_t> seen_column_ids;
       while (OB_SUCC(ret) && OB_SUCC(result->next())) {
-        uint64_t column_id = result->get_uint("column_id");
+        uint64_t column_id = 0;
+        if (OB_FAIL(result->get_uint("column_id", column_id))) {
+          LOG_WARN("failed to read ai column id", K(ret));
+          break;
+        }
         bool seen = false;
         for (int64_t i = 0; !seen && i < seen_column_ids.count(); ++i) {
           seen = (seen_column_ids.at(i) == column_id);
@@ -4866,40 +4870,56 @@ int ObSchemaServiceSQLImpl::fetch_ai_column_info(
           LOG_WARN("failed to record seen ai column id", K(ret));
         } else {
           ObAiColumnSchema ai_column;
-          ai_column.table_id_ = result->get_uint("table_id");
-          ai_column.column_id_ = column_id;
-          ai_column.definition_version_ = result->get_uint("definition_version");
-          ai_column.max_retries_ = result->get_int("max_retries");
-          ai_column.is_embedding_ = (result->get_int("is_embedding") != 0);
-          ai_column.vector_dimension_ = result->get_int("vector_dimension");
-          ai_column.state_column_id_ = result->get_uint("state_column_id");
-          ai_column.request_column_id_ = result->get_uint("request_column_id");
-          ai_column.result_spec_column_id_ = result->get_uint("result_spec_column_id");
           ObString tmp_str;
+          int64_t tmp_int = 0;
+          ai_column.is_embedding_ = false;
+          if (OB_FAIL(result->get_uint("table_id", ai_column.table_id_))) {
+            LOG_WARN("failed to read ai table id", K(ret));
+          } else if (OB_FAIL(result->get_uint("column_id", ai_column.column_id_))) {
+            LOG_WARN("failed to read ai column id", K(ret));
+          } else if (OB_FAIL(result->get_uint("definition_version", ai_column.definition_version_))) {
+            LOG_WARN("failed to read ai definition version", K(ret));
+          } else if (OB_FAIL(result->get_int("max_retries", ai_column.max_retries_))) {
+            LOG_WARN("failed to read ai max retries", K(ret));
+          } else if (OB_FAIL(result->get_int("is_embedding", tmp_int))) {
+            LOG_WARN("failed to read ai is_embedding", K(ret));
+          } else if (OB_FAIL(result->get_int("vector_dimension", ai_column.vector_dimension_))) {
+            LOG_WARN("failed to read ai vector dimension", K(ret));
+          } else if (OB_FAIL(result->get_uint("state_column_id", ai_column.state_column_id_))) {
+            LOG_WARN("failed to read ai state column id", K(ret));
+          } else if (OB_FAIL(result->get_uint("request_column_id", ai_column.request_column_id_))) {
+            LOG_WARN("failed to read ai request column id", K(ret));
+          } else if (OB_FAIL(result->get_uint("result_spec_column_id", ai_column.result_spec_column_id_))) {
+            LOG_WARN("failed to read ai result spec column id", K(ret));
+          } else {
+          ai_column.is_embedding_ = (tmp_int != 0);
           if (OB_FAIL(result->get_varchar("column_name", tmp_str))) {
             LOG_WARN("failed to read ai column name", K(ret));
-          } else if (OB_FAIL(ai_column.set_column_name(table_schema.get_allocator(), tmp_str))) {
+          } else if (OB_FAIL(ai_column.set_column_name(allocator, tmp_str))) {
             LOG_WARN("failed to copy ai column name", K(ret));
           } else if (OB_FAIL(result->get_varchar("sync_mode", tmp_str))) {
             LOG_WARN("failed to read ai sync mode", K(ret));
-          } else if (OB_FAIL(ai_column.set_sync_mode(table_schema.get_allocator(), tmp_str))) {
+          } else if (OB_FAIL(ai_column.set_sync_mode(allocator, tmp_str))) {
             LOG_WARN("failed to copy ai sync mode", K(ret));
           } else if (OB_FAIL(result->get_varchar("model_name", tmp_str))) {
             LOG_WARN("failed to read ai model name", K(ret));
-          } else if (OB_FAIL(ai_column.set_model_name(table_schema.get_allocator(), tmp_str))) {
+          } else if (OB_FAIL(ai_column.set_model_name(allocator, tmp_str))) {
             LOG_WARN("failed to copy ai model name", K(ret));
           } else if (OB_FAIL(result->get_varchar("input_expr", tmp_str))) {
             LOG_WARN("failed to read ai input expr", K(ret));
-          } else if (OB_FAIL(ai_column.set_input_expr(table_schema.get_allocator(), tmp_str))) {
+          } else if (OB_FAIL(ai_column.set_input_expr(allocator, tmp_str))) {
             LOG_WARN("failed to copy ai input expr", K(ret));
           } else if (OB_FAIL(result->get_varchar("normalized_expr", tmp_str))) {
             LOG_WARN("failed to read ai normalized expr", K(ret));
-          } else if (OB_FAIL(ai_column.set_normalized_expr(table_schema.get_allocator(), tmp_str))) {
+          } else if (OB_FAIL(ai_column.set_normalized_expr(allocator, tmp_str))) {
             LOG_WARN("failed to copy ai normalized expr", K(ret));
           } else if (OB_FAIL(ai_columns.push_back(ai_column))) {
             LOG_WARN("failed to append ai column", K(ret));
           }
         }
+      }
+      if (OB_ITER_END == ret) {
+        ret = OB_SUCCESS;  // normal end of iteration
       }
       if (OB_SUCC(ret)) {
         for (int64_t i = 0; OB_SUCC(ret) && i < ai_columns.count(); ++i) {
