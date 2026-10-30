@@ -4082,23 +4082,29 @@ int ObSchemaServiceSQLImpl::get_not_core_table_schema(
     ret = OB_INVALID_ARGUMENT;
   } else if (OB_FAIL(fetch_table_info(schema_status, table_id, schema_version,
                                       sql_client, allocator, table_schema))) {
+    LOG_ERROR("schema sub-fetch failed", K(ret), K(table_id), "step", "fetch_table_info");
   } else if (OB_FAIL(fetch_column_info(schema_status, table_id, schema_version,
                                        sql_client, table_schema))) {
+    LOG_ERROR("schema sub-fetch failed", K(ret), K(table_id), "step", "fetch_column_info");
   } else if (!is_schema_fetch_dependency
              && OB_FAIL(fetch_partition_info(schema_status, table_id, schema_version,
                                              sql_client, table_schema))) {
+    LOG_ERROR("schema sub-fetch failed", K(ret), K(table_id), "step", "fetch_partition_info");
   }
   if (OB_SUCC(ret) && !is_schema_fetch_dependency
       && OB_FAIL(fetch_foreign_key_info(schema_status, table_id, schema_version,
                                         sql_client, *table_schema))) {
+    LOG_ERROR("schema sub-fetch failed", K(ret), K(table_id), "step", "fetch_foreign_key_info");
   }
   if (OB_SUCC(ret) && !is_schema_fetch_dependency
       && OB_FAIL(fetch_constraint_info(schema_status, table_id, schema_version,
                                        sql_client, table_schema))) {
+    LOG_ERROR("schema sub-fetch failed", K(ret), K(table_id), "step", "fetch_constraint_info");
   }
   if (OB_SUCC(ret) && !is_schema_fetch_dependency
       && OB_FAIL(fetch_trigger_list(schema_status, table_id, schema_version,
                                     sql_client, *table_schema))) {
+    LOG_ERROR("schema sub-fetch failed", K(ret), K(table_id), "step", "fetch_trigger_list");
   }
   // AI metadata lives only on user tables. Inner tables (id < OB_MAX_INNER_TABLE_ID)
   // never carry AI columns; fetching AI info FOR them queries __all_ai_column_history,
@@ -4106,9 +4112,20 @@ int ObSchemaServiceSQLImpl::get_not_core_table_schema(
   // (same self-reference as for the AI metadata tables themselves) and ends with
   // OB_ITER_END half-built schemas. Skip inner tables entirely.
   if (OB_SUCC(ret) && !is_schema_fetch_dependency
-      && table_id >= OB_MAX_INNER_TABLE_ID
-      && OB_FAIL(fetch_ai_column_info(schema_status, table_id, schema_version,
-                                      sql_client, allocator, *table_schema))) {
+      && table_id >= OB_MAX_INNER_TABLE_ID) {
+    ret = fetch_ai_column_info(schema_status, table_id, schema_version,
+                               sql_client, allocator, *table_schema);
+    if (OB_ITER_END == ret) {
+      // No AI metadata rows for this table (or the inner read reported the end
+      // of its result): the table simply has no AI columns. This must never
+      // poison the table schema fetch, otherwise the refresh caches a schema
+      // with column_cnt == 0 and every statement on the table fails.
+      LOG_ERROR("ai column info fetch reported end of iteration", K(table_id),
+                K(schema_version));
+      ret = OB_SUCCESS;
+    } else if (OB_FAIL(ret)) {
+      LOG_ERROR("schema sub-fetch failed", K(ret), K(table_id), "step", "fetch_ai_column_info");
+    }
   }
   if (OB_FAIL(ret)) {
     // A failing sub-fetch used to leave a half-built (column_cnt == 0) table
@@ -4892,7 +4909,16 @@ int ObSchemaServiceSQLImpl::fetch_ai_column_info(
                                OB_ALL_AI_COLUMN_HISTORY_TNAME, table_id, schema_version))) {
       LOG_WARN("failed to build ai column fetch sql", K(ret));
     } else if (OB_FAIL(sql_client_retry_weak.read(res, sql.ptr()))) {
-      LOG_WARN("failed to read ai column history", K(ret));
+      if (OB_ITER_END == ret) {
+        // The inner SQL client reports "no rows" as OB_ITER_END for this read.
+        // A table without AI columns simply has no metadata rows, which must
+        // not fail the surrounding table-schema fetch.
+        LOG_ERROR("ai column history read returned no rows", K(ret), K(table_id),
+                  K(schema_version));
+        ret = OB_SUCCESS;
+      } else {
+        LOG_ERROR("failed to read ai column history", K(ret), K(table_id));
+      }
     } else if (OB_ISNULL(result = res.get_result())) {
       ret = OB_ERR_UNEXPECTED;
     } else {
