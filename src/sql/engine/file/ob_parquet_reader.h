@@ -47,8 +47,11 @@ public:
     bool ok_ = false;
   };
 
-  // Reads the whole file into memory (files are expected to be small) and
-  // decodes every row group column by column.
+  // Parses the footer of a whole in-memory file (files are expected to be
+  // small) and reports the schema: leaf column names in file order, the
+  // physical type and value count of the first row group, and the total row
+  // count. Values are decoded per row group by read_group_as_rows(); the
+  // ColumnChunkData::plain_bytes_ of a ReadResult is therefore left empty.
   static int read_file(const char *buf, int64_t len, ReadResult &result);
 
   // Decode one row group, converting the columns listed in `needed_cols`
