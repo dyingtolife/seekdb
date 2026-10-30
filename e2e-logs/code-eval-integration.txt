@@ -1,0 +1,108 @@
+CODE EVALUATION SUBMISSION - single-branch integration of the three kernel problems
+generated: 2026-10-30T18:29:09+08:00
+branch:    submission/code-eval
+base line: feat/ai-column-runtime @ f1996d477 (52 commits: AI COLUMN DDL + runtime)
+
+=== 1) AI function enhancement (problem 03) ===
+source commit: 9986e271f (feat/ai-function-hardening)
+files: src/sql/engine/expr/ob_expr_ai/{ob_ai_func_utils.cpp,ob_expr_ai_complete.cpp,ob_expr_ai_rerank.cpp,ob_expr_ai_rerank.h}
+merged into ob_ai_func_utils.cpp together with the AI-column runtime addition
+ObAIFuncModel::call_completion_with_system (638da3a2d): 3-way merge, 0 conflicts.
+
+=== 2) File as database (problem 04) ===
+source commits (cherry-picked -x in order, 0 conflicts):
+  4a71be343 d48d1f93f 8e7f1b101 98d024293 94262ed93
+  125bb935c f4ac53ece 89fe9a8ac 5d961f429 5fa541b37
+
+=== 3) AI COLUMN (problem 05) ===
+source line: feat/ai-column-runtime @ f1996d477 (inherited as the integration base)
+
+=== union proof ===
+HEAD vs 5fa541b37 differs by: 41 files (37 AI-column + 4 hardening)
+HEAD vs f1996d477 differs by: 65 files (the file-sql delta)
+
+=== build ===
+INFO: Elapsed time: 2430.174s, Critical Path: 260.46s
+INFO: Build completed successfully, 1843 total actions
+binary: build/bin/src/observer/seekdb
+6e3fd2a36f8de942abece3d7f509a8a45f1d0fd82593a98902f3e7bfbb8c1350  build/bin/src/observer/seekdb
+
+=== (a) AI functions e2e - problem 03 driver, integrated binary ===
+PASS ollama missing response rejected (4070) | (4070, 'unexpected http message: {"done": true, "model": "qwen2.5"}')
+PASS ollama valid completion after rejections | (('ogen:still-alive',),)
+PASS ai_rerank batch rejects count mismatch (4070) | (4070, 'Invalid data')
+PASS ai_rerank batch rejects duplicate index (4070) | (4070, 'Invalid data')
+PASS ai_rerank batch rejects out-of-range index (4070) | (4070, 'Invalid data')
+PASS ai_rerank batch rejects non-numeric score (4070) | (4070, 'Invalid data')
+PASS ai_rerank doc_key path rejects count mismatch (4070) | (4070, 'Invalid data')
+PASS ai_rerank valid result after rejections | ((3,),)
+SUMMARY passed=38 failed=0
+A_EXIT=0
+
+=== (b) file_sql mysqltest suite - tools/deploy/mysql_test/test_suite/file_sql ===
+ok
+MYSQLTEST_EXIT=0
+
+=== (c) AI COLUMN e2e - problem 05b driver, integrated binary ===
+PASS step8a-failed-result-null | 1
+PASS step8a-summary-still-ok | 1
+PASS step8a-failed-tasks-removed
+PASS step8b-strict-read-errors | OperationalError(11120, 'AI column table_id=500005, column_id=20 is not ready')
+PASS step8b-strict-ready-col-passes | None
+PASS step8b-strict-off-passes | None
+PASS step8c-retry-ok
+PASS step8c-retry-republished | 1
+PASS step8c-tasks-drained
+PASSED: 38  FAILED: 0
+PASSED: 38  FAILED: 0
+C_EXIT=0
+
+=== observer binary identity reported by the binary itself ===
+Starting seekdb (OceanBase seekdb 1.4.0.0) source revision 1-d6e867e90ecdba07bd4cb3aa5df9cff9c49a6a2d.
+seekdb (OceanBase seekdb 1.4.0.0)
+
+--- mysqltest run log (actual output of the suite on the integrated binary) ---
+# enable_file_sql defaults to OFF
+default_enabled
+0
+# syntax and format validation
+# CSV scan, type conversion, duplicate headers and multiline quotes
+id	name	score	active	day	created	note	id__2
+1	Alice	98.5	1	2026-08-01	2026-08-01 10:11:12	hello,<NL>world	101
+2	Bob	87	0	NULL	NULL	plain	102
+3	Chen	90.25	1	2026-08-03	2026-08-03 12:13:14	say "hi"	103
+row_count	id_sum	score_avg	active_count
+3	6	91.92	2
+# JSONL union schema and missing fields
+id	name	score	active	day	note
+1	Alice	98.5	1	NULL	NULL
+2	Bob	NULL	0	2026-08-02	NULL
+3	Chen	90	1	NULL	ok
+# inferred CSV schema using DuckDB DESCRIBE syntax
+column_name	column_type	null	key	default	extra
+id	BIGINT	NO	NULL	NULL	NULL
+name	VARCHAR	NO	NULL	NULL	NULL
+score	DOUBLE	NO	NULL	NULL	NULL
+active	BOOLEAN	NO	NULL	NULL	NULL
+day	DATE	YES	NULL	NULL	NULL
+created	DATETIME	YES	NULL	NULL	NULL
+note	VARCHAR	NO	NULL	NULL	NULL
+id__2	BIGINT	NO	NULL	NULL	NULL
+# Parquet scan and aggregate push through projected columns
+row_count	min_c1	max_c1	sum_c1
+7	0	6	21
+# DuckDB glob returns one file column
+file
+basic.csv
+basic.jsonl
+invalid.txt
+simple.parquet
+# COPY query to CSV and read it back
+id	name	score
+1	Alice	98.5
+2	Bob	87
+3	Chen	90.25
+--- end run log ---
+note: the suite installs its CSV/JSONL/Parquet fixtures via the ssh/scp
+      shims into $OBSERVER_DIR/data_for_mysqltest_file_sql and removes that
+      directory again in remove_file_sql_data.inc, so nothing is left behind.
