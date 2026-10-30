@@ -36,7 +36,8 @@ namespace sql
 
 OB_SERIALIZE_MEMBER(ObSelectIntoOpInput, task_id_, sqc_id_);
 OB_SERIALIZE_MEMBER((ObSelectIntoSpec, ObOpSpec), into_type_, user_vars_, outfile_name_,
-    field_str_, line_str_, closed_cht_, is_optional_, select_exprs_, is_single_, max_file_size_,
+    field_str_, line_str_, header_str_, null_str_, closed_cht_, is_optional_, select_exprs_,
+    is_single_, is_copy_to_, max_file_size_,
     escaped_cht_, cs_type_, parallel_, buffer_size_, is_overwrite_,
     external_properties_);
 
@@ -230,6 +231,7 @@ int ObSelectIntoOp::inner_get_next_row()
   }
   if (OB_FAIL(ret) && OB_ITER_END != ret) {
     need_commit_ = false;
+    copy_failed_ = true;
   }
   return ret;
 }
@@ -312,6 +314,7 @@ int ObSelectIntoOp::inner_get_next_batch(const int64_t max_row_cnt)
   }
   if (OB_FAIL(ret)) {
     need_commit_ = false;
+    copy_failed_ = true;
   }
   return ret;
 }
@@ -326,6 +329,17 @@ int ObSelectIntoOp::inner_close()
 {
   int ret = OB_SUCCESS;
   if (OB_NOT_NULL(data_writer_) && OB_FAIL(data_writer_->close_data_writer())) {
+  }
+  if (MY_SPEC.is_copy_to_ && copy_failed_ && !basic_url_.empty()) {
+    // COPY ... TO: a failed query must not leave a partial export behind
+    char path_buf[common::OB_MAX_FILE_NAME_LENGTH];
+    if (basic_url_.length() < static_cast<int32_t>(sizeof(path_buf))) {
+      MEMCPY(path_buf, basic_url_.ptr(), basic_url_.length());
+      path_buf[basic_url_.length()] = '\0';
+      if (0 != ::remove(path_buf)) {
+        LOG_WARN("failed to remove partially written copy target", K(basic_url_));
+      }
+    }
   }
   return ret;
 }
@@ -932,8 +946,14 @@ int ObSelectIntoOp::print_field(const ObObj &obj, ObCsvFileWriter &data_writer)
   if (!has_escape_) {
     OZ(write_obj_to_file(obj, data_writer, false));
   } else if (obj.is_null()) {
-    OZ(write_single_char_to_file(&char_escape_, data_writer));
-    OZ(write_single_char_to_file(&char_n, data_writer));
+    if (MY_SPEC.null_str_.get_val_len() > 0) {
+      // COPY ... TO writes the configured NULL text verbatim (the reader maps
+      // it back to NULL); SELECT INTO OUTFILE keeps the classic \N form
+      OZ(write_obj_to_file(MY_SPEC.null_str_, data_writer, false));
+    } else {
+      OZ(write_single_char_to_file(&char_escape_, data_writer));
+      OZ(write_single_char_to_file(&char_n, data_writer));
+    }
   } else {
     OZ(write_obj_to_file(obj, data_writer, true));
   }
@@ -1244,6 +1264,17 @@ int ObSelectIntoOp::create_the_only_data_writer(ObExternalFileWriter *&data_writ
   } else if (ObExternalFileFormat::FormatType::CSV_FORMAT == format_type_ && MY_SPEC.buffer_size_ > 0) {
     csv_data_writer = static_cast<ObCsvFileWriter*>(data_writer);
     if (OB_FAIL(csv_data_writer->alloc_buf(ctx_.get_allocator(), MY_SPEC.buffer_size_))) {
+    }
+  }
+  if (OB_FAIL(ret)) {
+  } else if (!header_written_ && MY_SPEC.header_str_.get_val_len() > 0
+             && OB_NOT_NULL(csv_data_writer)) {
+    const common::ObString header = MY_SPEC.header_str_.get_varchar();
+    // write the header row before the first data row, straight to storage
+    if (OB_FAIL(csv_data_writer->flush_data(header.ptr(), header.length()))) {
+      LOG_WARN("failed to write csv header", K(ret));
+    } else {
+      header_written_ = true;
     }
   }
   return ret;

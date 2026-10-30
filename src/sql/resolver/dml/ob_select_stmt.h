@@ -120,11 +120,14 @@ struct ObSelectIntoItem
         outfile_name_(),
         field_str_(),
         line_str_(),
+        header_str_(),
+        null_str_(),
         user_vars_(),
         pl_vars_(),
         closed_cht_(),
         is_optional_(DEFAULT_OPTIONAL_ENCLOSED),
         is_single_(DEFAULT_SINGLE_OPT),
+        is_copy_to_(false),
         max_file_size_(DEFAULT_MAX_FILE_SIZE),
         escaped_cht_(),
         buffer_size_(DEFAULT_BUFFER_SIZE),
@@ -134,6 +137,10 @@ struct ObSelectIntoItem
     field_str_.set_collation_type(ObCharset::get_system_collation());
     line_str_.set_varchar(DEFAULT_LINE_TERM_STR);
     line_str_.set_collation_type(ObCharset::get_system_collation());
+    header_str_.set_varchar(ObString(0, ""));
+    header_str_.set_collation_type(ObCharset::get_system_collation());
+    null_str_.set_varchar(ObString(0, ""));
+    null_str_.set_collation_type(ObCharset::get_system_collation());
     escaped_cht_.meta_.set_char();
     escaped_cht_.set_char_value(&DEFAULT_FIELD_ESCAPED_CHAR, 1);
     escaped_cht_.set_collation_type(ObCharset::get_system_collation());
@@ -150,6 +157,9 @@ struct ObSelectIntoItem
     closed_cht_ = other.closed_cht_;
     is_optional_ = other.is_optional_;
     is_single_ = other.is_single_;
+    is_copy_to_ = other.is_copy_to_;
+    header_str_ = other.header_str_;
+    null_str_ = other.null_str_;
     max_file_size_ = other.max_file_size_;
     escaped_cht_ = other.escaped_cht_;
     cs_type_ = other.cs_type_;
@@ -167,6 +177,9 @@ struct ObSelectIntoItem
                K_(closed_cht),
                K_(is_optional),
                K_(is_single),
+               K_(is_copy_to),
+               K_(header_str),
+               K_(null_str),
                K_(max_file_size),
                K_(escaped_cht),
                K_(cs_type),
@@ -176,11 +189,14 @@ struct ObSelectIntoItem
   common::ObObj outfile_name_;
   common::ObObj field_str_; // field terminated str
   common::ObObj line_str_; // line terminated str
+  common::ObObj header_str_; // rendered CSV header line, empty = no header
+  common::ObObj null_str_; // text written for SQL NULL
   common::ObSEArray<common::ObString, 16> user_vars_; // user variables
   common::ObSEArray<sql::ObRawExpr*, 16> pl_vars_; // pl variables
   common::ObObj closed_cht_; // all fields, "123","ab"
   bool is_optional_; //  for string, closed character, such as "aa"
   bool is_single_;
+  bool is_copy_to_; // COPY ... TO: remove the file if the query fails
   int64_t max_file_size_;
   common::ObObj escaped_cht_;
   common::ObCollationType cs_type_;

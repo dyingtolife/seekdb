@@ -61,10 +61,13 @@ public:
       outfile_name_(),
       field_str_(),
       line_str_(),
+      header_str_(),
+      null_str_(),
       closed_cht_(),
       is_optional_(false),
       select_exprs_(alloc),
       is_single_(true),
+      is_copy_to_(false),
       max_file_size_(DEFAULT_MAX_FILE_SIZE),
       escaped_cht_(),
       cs_type_(CS_TYPE_INVALID),
@@ -80,10 +83,13 @@ public:
   common::ObObj outfile_name_;
   common::ObObj field_str_;
   common::ObObj line_str_;
+  common::ObObj header_str_;
+  common::ObObj null_str_;
   common::ObObj closed_cht_;
   bool is_optional_;
   common::ObFixedArray<ObExpr*, common::ObIAllocator> select_exprs_;
   bool is_single_;
+  bool is_copy_to_;
   int64_t max_file_size_;
   common::ObObj escaped_cht_;
   common::ObCollationType cs_type_;
@@ -102,6 +108,8 @@ public:
     : ObOperator(exec_ctx, spec, input),
       top_limit_cnt_(INT64_MAX),
       is_first_(true),
+      header_written_(false),
+      copy_failed_(false),
       field_str_(),
       line_str_(),
       cs_type_(CS_TYPE_INVALID),
@@ -266,6 +274,8 @@ private:
 private:
   int64_t top_limit_cnt_;
   bool is_first_;
+  bool header_written_;
+  bool copy_failed_;
   ObObj field_str_;
   ObObj line_str_;
   ObObj file_name_;

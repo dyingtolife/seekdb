@@ -6821,6 +6821,9 @@ int ObLogPlan::allocate_select_into_as_top(ObLogicalOperator *&old_top)
       select_into->set_outfile_name(into_item->outfile_name_);
       select_into->set_field_str(into_item->field_str_);
       select_into->set_line_str(into_item->line_str_);
+      select_into->set_header_str(into_item->header_str_);
+      select_into->set_null_str(into_item->null_str_);
+      select_into->set_is_copy_to(into_item->is_copy_to_);
       select_into->set_user_vars(into_item->user_vars_);
       select_into->set_is_optional(into_item->is_optional_);
       select_into->set_closed_cht(into_item->closed_cht_);

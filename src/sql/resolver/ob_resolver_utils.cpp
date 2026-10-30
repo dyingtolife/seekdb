@@ -1837,6 +1837,12 @@ stmt::StmtType ObResolverUtils::get_stmt_type_by_item_type(const ObItemType item
         type = stmt::T_LOAD_DATA;
       }
       break;
+      case T_COPY_TO: {
+        // COPY (query) TO file resolves to the child query with a synthesized
+        // select-into item, so it is planned and executed as that SELECT
+        type = stmt::T_SELECT;
+      }
+      break;
       case T_LOCK_TABLE: {
         type = stmt::T_LOCK_TABLE;
       }

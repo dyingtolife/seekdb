@@ -5502,6 +5502,8 @@ int ObStaticEngineCG::generate_spec(ObLogSelectInto &op, ObSelectIntoSpec &spec,
   } else if (OB_FAIL(deep_copy_obj(alloc, op.get_outfile_name(), spec.outfile_name_))) {
   } else if (OB_FAIL(deep_copy_obj(alloc, op.get_field_str(), spec.field_str_))) {
   } else if (OB_FAIL(deep_copy_obj(alloc, op.get_line_str(), spec.line_str_))) {
+  } else if (OB_FAIL(deep_copy_obj(alloc, op.get_header_str(), spec.header_str_))) {
+  } else if (OB_FAIL(deep_copy_obj(alloc, op.get_null_str(), spec.null_str_))) {
   } else if (OB_FAIL(deep_copy_obj(alloc, op.get_closed_cht(), spec.closed_cht_))) {
   } else if (OB_FAIL(deep_copy_obj(alloc, op.get_escaped_cht(), spec.escaped_cht_))) {
   } else if (OB_FAIL(spec.external_properties_.store_str(op.get_external_properties()))) {
@@ -5533,6 +5535,7 @@ int ObStaticEngineCG::generate_spec(ObLogSelectInto &op, ObSelectIntoSpec &spec,
       spec.cs_type_ = op.get_cs_type();
       spec.parallel_ = op.get_parallel();
       spec.is_overwrite_ = op.get_is_overwrite();
+      spec.is_copy_to_ = op.get_is_copy_to();
       spec.plan_->need_drive_dml_query_ = true;
     }
   }

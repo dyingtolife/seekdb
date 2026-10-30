@@ -35,10 +35,13 @@ public:
         outfile_name_(),
         field_str_(),
         line_str_(),
+        header_str_(),
+        null_str_(),
         user_vars_(),
         closed_cht_(),
         is_optional_(true),
         is_single_(true),
+        is_copy_to_(false),
         max_file_size_(DEFAULT_MAX_FILE_SIZE),
         buffer_size_(DEFAULT_BUFFER_SIZE),
         escaped_cht_(),
@@ -63,6 +66,18 @@ public:
   inline void set_line_str(common::ObObj &line_str)
   {
     line_str_ = line_str;
+  }
+  inline void set_header_str(common::ObObj &header_str)
+  {
+    header_str_ = header_str;
+  }
+  inline void set_null_str(common::ObObj &null_str)
+  {
+    null_str_ = null_str;
+  }
+  inline void set_is_copy_to(bool is_copy_to)
+  {
+    is_copy_to_ = is_copy_to;
   }
   inline void set_user_vars(common::ObIArray<common::ObString> &user_vars)
   {
@@ -136,6 +151,18 @@ public:
   {
     return is_single_;
   }
+  inline bool get_is_copy_to() const
+  {
+    return is_copy_to_;
+  }
+  inline common::ObObj get_header_str() const
+  {
+    return header_str_;
+  }
+  inline common::ObObj get_null_str() const
+  {
+    return null_str_;
+  }
   inline int64_t get_max_file_size() const
   {
     return max_file_size_;
@@ -177,11 +204,14 @@ private:
   common::ObObj outfile_name_;
   common::ObObj field_str_;
   common::ObObj line_str_;
+  common::ObObj header_str_;
+  common::ObObj null_str_;
   common::ObSEArray<ObRawExpr*, 8, common::ModulePageAllocator, true> select_exprs_;
   common::ObSEArray<common::ObString, 16, common::ModulePageAllocator, true> user_vars_;
   common::ObObj closed_cht_;
   bool is_optional_;
   bool is_single_;
+  bool is_copy_to_;
   int64_t max_file_size_;
   int64_t buffer_size_;
   common::ObObj escaped_cht_;
