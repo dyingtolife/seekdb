@@ -157,6 +157,12 @@ int ObAiColumnWorker::execute_task_group(common::ObMySQLProxy &sql_proxy,
       if (OB_FAIL(result->get_varchar("ai_input", input_value))) {
         SERVER_LOG(WARN, "read ai input value failed", K(ret));
       } else {
+        // Stage marker 1/4: the eval SQL ran and produced a non-empty input.
+        // ERROR level on purpose: WARN is compiled out in this build, and this
+        // is the only trace a task leaves behind in the log.
+        SERVER_LOG(ERROR, "ai column exec: eval ok", K(task.task_id_),
+                    K(ai_col.column_id_), K(ret), "input_len", input_value.length(),
+                    "eval_sql", eval_sql.ptr());
         // 2. Call the model: system prompt = type hint, user content = input.
         ObAIFuncExprInfo *info = NULL;
         ObAiModelEndpointInfo endpoint;
@@ -182,16 +188,42 @@ int ObAiColumnWorker::execute_task_group(common::ObMySQLProxy &sql_proxy,
           if (OB_SUCC(ret) && !ai_col.is_embedding_) {
             ObString raw_result;
             if (OB_FAIL(ObAIFuncUtils::get_ai_func_info(allocator, ai_col.model_name_, info))) {
-              SERVER_LOG(WARN, "get ai func info failed", K(ret), K(ai_col.model_name_));
+              // Stage marker 2/4: the model schema could not be turned into an
+              // ObAIFuncExprInfo (type_ is what call_completion checks).
+              SERVER_LOG(ERROR, "ai column exec: get_ai_func_info FAILED", K(ret),
+                          K(ai_col.model_name_), K(task.task_id_));
             } else if (OB_FAIL(resolver->resolve_by_model_name(
                            ai_col.model_name_, allocator, endpoint, false))) {
-              SERVER_LOG(WARN, "resolve ai endpoint failed", K(ret), K(ai_col.model_name_));
+              // Stage marker 3/4b: model info ok, endpoint lookup failed.
+              SERVER_LOG(ERROR, "ai column exec: resolve_by_model_name FAILED", K(ret),
+                          K(ai_col.model_name_), K(task.task_id_),
+                          "is_completion", ObAIFuncUtils::is_completion_type(info));
             } else {
+              // Stage marker 3/4a: model info and endpoint both resolved.
+              SERVER_LOG(ERROR, "ai column exec: resolve_by_model_name ok",
+                          K(task.task_id_), K(ai_col.model_name_),
+                          "is_completion", ObAIFuncUtils::is_completion_type(info),
+                          "url", endpoint.get_url(),
+                          "provider", endpoint.get_provider(),
+                          "req_model", endpoint.get_request_model_name(),
+                          "sys_len", system_prompt.length(),
+                          "input_len", input_value.length());
               ObAIFuncModel model(allocator, *info, endpoint);
               if (OB_FAIL(model.call_completion_with_system(
                       system_prompt, input_value, raw_result))) {
-                SERVER_LOG(WARN, "ai model call failed", K(ret), K(task.task_id_));
-              } else if (result_col->is_json()
+                // Stage marker 4/4b: the model/HTTP call itself failed.
+                SERVER_LOG(ERROR, "ai column exec: call_completion FAILED", K(ret),
+                            K(ai_col.model_name_), K(task.task_id_),
+                            "is_completion", ObAIFuncUtils::is_completion_type(info),
+                            "url", endpoint.get_url(),
+                            "provider", endpoint.get_provider(),
+                            "input_len", input_value.length());
+              } else if (OB_SUCC(ret) && OB_NOT_NULL(info)) {
+                // Stage marker 4/4a: the model answered.
+                SERVER_LOG(ERROR, "ai column exec: call_completion ok",
+                            K(task.task_id_), K(ai_col.model_name_),
+                            "raw_len", raw_result.length(), "raw", raw_result);
+                if (result_col->is_json()
                          || ob_is_int_tc(result_col->get_data_type())
                          || ob_is_uint_tc(result_col->get_data_type())) {
                 // JSON/INT: keep raw text, quote/trim at publish time.
@@ -212,9 +244,10 @@ int ObAiColumnWorker::execute_task_group(common::ObMySQLProxy &sql_proxy,
                     SERVER_LOG(WARN, "build json literal failed", K(ret));
                   }
                 }
-              } else {
-                if (OB_FAIL(build_result_literal(allocator, ai_col, raw_result, result_literal))) {
-                  SERVER_LOG(WARN, "build string literal failed", K(ret));
+                } else {
+                  if (OB_FAIL(build_result_literal(allocator, ai_col, raw_result, result_literal))) {
+                    SERVER_LOG(WARN, "build string literal failed", K(ret));
+                  }
                 }
               }
             }

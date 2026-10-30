@@ -2787,6 +2787,76 @@ int ObDDLResolver::resolve_ai_column_definition(
     }
   }
 
+  // Extract the FIRST argument of the model call: that is the model name the
+  // worker resolves the endpoint with. Round 12 stored the FUNCTION name here
+  // ("AI_COMPLETE"), so every task died in get_ai_func_info() with -4002
+  // (OB_INVALID_ARGUMENT, "ai model not found") before it ever reached the
+  // network, even though the model and the endpoint existed and the same call
+  // worked from a user session.
+  ObString model_arg_str;
+  if (OB_SUCC(ret)) {
+    ObString call_text(expr_node->str_len_, expr_node->str_value_);
+    if (OB_ISNULL(call_text.ptr()) || 0 == call_text.length()) {
+      // leave empty: the caller falls back to the function name
+    } else {
+      int64_t depth = 0;
+      bool in_squote = false;
+      bool in_dquote = false;
+      bool in_backquote = false;
+      int64_t comma_pos = -1;
+      int64_t open_pos = -1;
+      for (int64_t i = 0; i < call_text.length(); ++i) {
+        char c = call_text.ptr()[i];
+        if (in_squote) {
+          if ('\'' == c) { in_squote = false; }
+        } else if (in_dquote) {
+          if ('"' == c) { in_dquote = false; }
+        } else if (in_backquote) {
+          if ('`' == c) { in_backquote = false; }
+        } else if ('\'' == c) {
+          in_squote = true;
+        } else if ('"' == c) {
+          in_dquote = true;
+        } else if ('`' == c) {
+          in_backquote = true;
+        } else if ('(' == c) {
+          if (0 == depth) { open_pos = i; }
+          ++depth;
+        } else if (')' == c) {
+          --depth;
+        } else if (',' == c && 1 == depth && comma_pos < 0) {
+          comma_pos = i;
+        }
+      }
+      if (open_pos >= 0) {
+        int64_t end = (comma_pos > open_pos) ? comma_pos : call_text.length();
+        int64_t start = open_pos + 1;
+        int64_t len = end - start;
+        while (len > 0 && isspace(static_cast<unsigned char>(call_text.ptr()[start]))) {
+          ++start;
+          --len;
+        }
+        while (len > 0
+               && isspace(static_cast<unsigned char>(call_text.ptr()[start + len - 1]))) {
+          --len;
+        }
+        // strip one level of quoting: AI_COMPLETE('m', ...) / ("m", ...)
+        if (len >= 2
+            && ((('\'' == call_text.ptr()[start])
+                 && ('\'' == call_text.ptr()[start + len - 1]))
+                || (('"' == call_text.ptr()[start])
+                    && ('"' == call_text.ptr()[start + len - 1])))) {
+          ++start;
+          len -= 2;
+        }
+        if (len > 0) {
+          model_arg_str.assign_ptr(const_cast<char *>(call_text.ptr() + start),
+                                   static_cast<int32_t>(len));
+        }
+      }
+    }
+  }
+
   // Build the normalized expression text: original SQL text of the call, with
   // an explicit instruction appended for JSON columns so the model always
   // returns one JSON scalar value.
@@ -2822,8 +2892,9 @@ int ObDDLResolver::resolve_ai_column_definition(
       // final, and the ALTER path (ObDDLService) matches the entry by name.
       if (OB_FAIL(ai_column.set_column_name(allocator, column.get_column_name_str()))) {
         SQL_RESV_LOG(WARN, "failed to store ai column name", K(ret));
-      } else if (OB_FAIL(ai_column.set_model_name(allocator, func_name))) {
-        SQL_RESV_LOG(WARN, "failed to store ai model name", K(ret));
+      } else if (OB_FAIL(ai_column.set_model_name(
+                     allocator, model_arg_str.length() > 0 ? model_arg_str : func_name))) {
+        SQL_RESV_LOG(ERROR, "failed to store ai model name", K(ret));
       } else if (OB_FAIL(ai_column.set_input_expr(allocator, input_arg_str))) {
         SQL_RESV_LOG(WARN, "failed to store ai input expr", K(ret));
       } else if (OB_FAIL(ai_column.set_normalized_expr(allocator, expr_str))) {

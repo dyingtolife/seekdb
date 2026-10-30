@@ -486,18 +486,38 @@ int ObAiColumnTaskService::publish_group(ObISQLClient &sql_client,
     }
   }
   if (OB_SUCC(ret)) {
-    // Group is terminal: remove all task rows of this request.
+    // Group is terminal: remove the task rows of THIS publish.
+    //
+    // The scope is the published column ids, not the whole request: every AI
+    // column of one row change shares a single request_id, so a row-wide
+    // delete dropped sibling tasks that had not run yet. Their result then
+    // never published and the queue drained with NULL AI columns - the exact
+    // shape of the round-12 failure (tasks consumed, every summary still NULL).
+    ObSqlString col_list;
+    for (int64_t i = 0; OB_SUCC(ret) && i < entries.count(); ++i) {
+      if (OB_FAIL(col_list.append_fmt("%s%" PRIu64, 0 == i ? "" : ", ",
+                                      entries.at(i).column_id_))) {
+        SHARE_SCHEMA_LOG(ERROR, "build published column list failed", K(ret));
+      }
+    }
     ObSqlString del_sql;
     int64_t affected = 0;
-    if (OB_FAIL(del_sql.assign_fmt(
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(del_sql.assign_fmt(
             "DELETE FROM %s WHERE table_id = %" PRIu64
-            " AND rowkey_predicate = '%.*s' AND request_id = '%.*s'",
+            " AND rowkey_predicate = '%.*s' AND request_id = '%.*s'"
+            " AND column_id IN (%.*s)",
             OB_AI_COLUMN_TASK_TABLE, table_schema.get_table_id(),
             rowkey_predicate.length(), rowkey_predicate.ptr(),
-            request_id.length(), request_id.ptr()))) {
-      SHARE_SCHEMA_LOG(WARN, "build publish delete sql failed", K(ret));
+            request_id.length(), request_id.ptr(),
+            col_list.length(), col_list.ptr()))) {
+      SHARE_SCHEMA_LOG(ERROR, "build publish delete sql failed", K(ret));
     } else if (OB_FAIL(exec_write(sql_client, del_sql, affected))) {
-      SHARE_SCHEMA_LOG(WARN, "remove published tasks failed", K(ret));
+      SHARE_SCHEMA_LOG(ERROR, "remove published tasks failed", K(ret),
+                       "sql", del_sql.ptr());
+    } else {
+      SHARE_SCHEMA_LOG(ERROR, "ai published tasks removed", K(affected),
+                       "sql", del_sql.ptr());
     }
   }
   return ret;
@@ -593,17 +613,34 @@ int ObAiColumnTaskService::publish_failure_group(ObISQLClient &sql_client,
     }
   }
   if (OB_SUCC(ret)) {
+    // Same scoping rule as publish_group: a row change shares one request_id
+    // across all AI columns, so a terminal failure of one column must not
+    // delete the still-pending task rows of its siblings.
+    ObSqlString col_list;
+    for (int64_t i = 0; OB_SUCC(ret) && i < tasks.count(); ++i) {
+      if (OB_FAIL(col_list.append_fmt("%s%" PRIu64, 0 == i ? "" : ", ",
+                                      tasks.at(i).column_id_))) {
+        SHARE_SCHEMA_LOG(ERROR, "build failed column list failed", K(ret));
+      }
+    }
     ObSqlString del_sql;
     int64_t affected = 0;
-    if (OB_FAIL(del_sql.assign_fmt(
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(del_sql.assign_fmt(
             "DELETE FROM %s WHERE table_id = %" PRIu64
-            " AND rowkey_predicate = '%.*s' AND request_id = '%.*s'",
+            " AND rowkey_predicate = '%.*s' AND request_id = '%.*s'"
+            " AND column_id IN (%.*s)",
             OB_AI_COLUMN_TASK_TABLE, table_schema.get_table_id(),
             rowkey_predicate.length(), rowkey_predicate.ptr(),
-            request_id.length(), request_id.ptr()))) {
-      SHARE_SCHEMA_LOG(WARN, "build failure delete sql failed", K(ret));
+            request_id.length(), request_id.ptr(),
+            col_list.length(), col_list.ptr()))) {
+      SHARE_SCHEMA_LOG(ERROR, "build failure delete sql failed", K(ret));
     } else if (OB_FAIL(exec_write(sql_client, del_sql, affected))) {
-      SHARE_SCHEMA_LOG(WARN, "remove failed tasks failed", K(ret));
+      SHARE_SCHEMA_LOG(ERROR, "remove failed tasks failed", K(ret),
+                       "sql", del_sql.ptr());
+    } else {
+      SHARE_SCHEMA_LOG(ERROR, "ai failed tasks removed", K(affected),
+                       "sql", del_sql.ptr());
     }
   }
   return ret;
