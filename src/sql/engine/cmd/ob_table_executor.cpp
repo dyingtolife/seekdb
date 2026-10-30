@@ -765,15 +765,26 @@ int ObAlterTableExecutor::execute(ObExecContext &ctx, ObAlterTableStmt &stmt)
   if (OB_FAIL(ret)) {
     // do nothing
   } else if (stmt.has_ai_retry()) {
+    SQL_ENG_LOG(ERROR, "ai retry gate: executor entry", "arg_cnt",
+                stmt.get_ai_retry_args().count(),
+                "table_id", stmt.get_alter_table_arg().alter_table_schema_.get_table_id());
     // RETRY AI COLUMN: synchronous in-session execution. Select matched
     // rowkeys (status pseudo column maps to the hidden state column),
     // invalidate them and enqueue fresh tasks. Not a schema change.
     ObSchemaGetterGuard &guard = *ctx.get_sql_ctx()->schema_guard_;
     const ObTableSchema *table_schema = NULL;
-    if (OB_FAIL(guard.get_table_schema(stmt.get_alter_table_arg().alter_table_schema_.get_table_id(),
-                                       table_schema))) {
-      SQL_LOG(WARN, "get table schema for ai retry failed", K(ret));
+    uint64_t ai_retry_tid = stmt.get_alter_table_arg().alter_table_schema_.get_table_id();
+    int guard_ret = guard.get_table_schema(ai_retry_tid, table_schema);
+    SQL_ENG_LOG(ERROR, "ai retry gate: guard lookup", K(guard_ret), K(ai_retry_tid),
+                "is_null", OB_ISNULL(table_schema),
+                "guard_type", guard.get_schema_guard_type());
+    if (OB_SUCCESS != guard_ret) {
+      ret = guard_ret;
+      SQL_ENG_LOG(ERROR, "ai retry gate: get table schema for ai retry failed", K(ret),
+                  K(ai_retry_tid));
     } else if (OB_ISNULL(table_schema)) {
+      SQL_ENG_LOG(ERROR, "ai retry gate: table schema NULL after guard lookup",
+                  K(ai_retry_tid));
       ret = OB_ERR_UNEXPECTED;
     } else if (stmt.get_ai_retry_args().count() != 1) {
       // RETRY targets exactly one AI column; grammar permits one per action,
@@ -787,7 +798,8 @@ int ObAlterTableExecutor::execute(ObExecContext &ctx, ObAlterTableStmt &stmt)
                                                       arg.column_name_,
                                                       arg.where_clause_,
                                                       matched))) {
-        SQL_LOG(WARN, "retry ai column failed", K(ret), K(arg.column_name_));
+        SQL_LOG(ERROR, "ai retry gate: retry_ai_column failed", K(ret),
+                K(arg.column_name_));
       } else {
         SQL_LOG(INFO, "retry ai column done", K(matched), K(arg.column_name_));
       }

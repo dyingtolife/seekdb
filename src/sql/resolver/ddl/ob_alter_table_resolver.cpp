@@ -403,6 +403,8 @@ int ObAlterTableResolver::resolve_action_list(const ParseNode &node)
         switch (action_node->type_) {
         //deal with alter table option
         case T_ALTER_AI_RETRY: {
+            SQL_RESV_LOG(ERROR, "ai retry gate: resolver action", "child_cnt",
+                         action_node->num_child_);
             // RETRY AI COLUMN <col> [WHERE <expr>]: keep the column name and
             // the raw condition text; execution re-resolves the condition
             // against the table (status maps to the hidden state column).

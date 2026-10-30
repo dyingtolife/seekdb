@@ -799,6 +799,14 @@ int ObDMLService::process_update_row(const ObUpdCtDef &upd_ctdef,
 {
   int ret = OB_SUCCESS;
   is_skipped = false;
+  // ROUND 14 DIAG: is the update row hook reached, and with what ctx state?
+  SQL_ENG_LOG(ERROR, "ai upd gate: entry",
+              "is_primary_index", upd_ctdef.is_primary_index_,
+              "assign_cnt", upd_ctdef.assign_columns_.count(),
+              "has_ai", dml_op.ai_dml_ctx_.has_ai_columns_,
+              "inited", dml_op.ai_dml_ctx_.inited_,
+              "dep_cnt", dml_op.ai_dml_ctx_.dependency_names_.count(),
+              "ctx_table_id", dml_op.ai_dml_ctx_.table_id_);
   if (upd_ctdef.is_primary_index_) {
     uint64_t ref_table_id = upd_ctdef.das_base_ctdef_.index_tid_;
     ObSQLSessionInfo *my_session = NULL;
@@ -886,6 +894,13 @@ int ObDMLService::process_update_row(const ObUpdCtDef &upd_ctdef,
   // dependency column (or the rowkey) was assigned. Unrelated updates do not
   // trigger regeneration. Direct assignment to AI result columns is rejected
   // by the resolver before execution.
+  SQL_ENG_LOG(ERROR, "ai upd gate: pre-init",
+              "ret", ret, "skipped", is_skipped,
+              "row_changed", upd_rtdef.is_row_changed_,
+              "inited", dml_op.ai_dml_ctx_.inited_,
+              "has_ai", dml_op.ai_dml_ctx_.has_ai_columns_,
+              "assign_cnt", upd_ctdef.assign_columns_.count(),
+              "dep_cnt", dml_op.ai_dml_ctx_.dependency_names_.count());
   if (OB_SUCC(ret) && !is_skipped && upd_rtdef.is_row_changed_
       && !dml_op.ai_dml_ctx_.inited_) {
     int ai_init_ret = ObAiColumnDMLUtils::ensure_ctx(
@@ -898,6 +913,13 @@ int ObDMLService::process_update_row(const ObUpdCtDef &upd_ctdef,
   }
   if (OB_SUCC(ret) && !is_skipped && upd_rtdef.is_row_changed_
       && dml_op.ai_dml_ctx_.has_ai_columns_) {
+    SQL_ENG_LOG(ERROR, "ai upd gate: in ai block",
+                "assign_cnt", upd_ctdef.assign_columns_.count(),
+                "dep_cnt", dml_op.ai_dml_ctx_.dependency_names_.count(),
+                "assign0", upd_ctdef.assign_columns_.count() > 0
+                    ? upd_ctdef.assign_columns_.at(0).column_name_ : ObString(),
+                "dep0", dml_op.ai_dml_ctx_.dependency_names_.count() > 0
+                    ? dml_op.ai_dml_ctx_.dependency_names_.at(0) : ObString());
     bool touches_dependency = false;
     for (int64_t a = 0; !touches_dependency && a < upd_ctdef.assign_columns_.count(); ++a) {
       const ObString &assigned_name =
@@ -928,6 +950,11 @@ int ObDMLService::process_update_row(const ObUpdCtDef &upd_ctdef,
         }
       }
     }
+    SQL_ENG_LOG(ERROR, "ai upd gate: touches",
+                "touches_dep", touches_dependency,
+                "touches_rowkey", touches_rowkey,
+                "assign_cnt", upd_ctdef.assign_columns_.count(),
+                "dep_cnt", dml_op.ai_dml_ctx_.dependency_names_.count());
     if (touches_dependency || touches_rowkey) {
       int64_t rowkey_cnt = upd_ctdef.dupd_ctdef_.rowkey_cnt_;
       if (rowkey_cnt > 0 && rowkey_cnt <= upd_ctdef.old_row_.count()) {
