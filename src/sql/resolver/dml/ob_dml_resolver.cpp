@@ -3460,7 +3460,6 @@ int ObDMLResolver::resolve_str_const(const ParseNode &parse_tree, ObString& path
 {
   INIT_SUCC(ret);
   ObObjParam val;
-  char *buf = NULL;
   ObString literal_prefix;
   bool is_paramlize = false;
   ObExprInfo parents_expr_info;
@@ -3497,11 +3496,32 @@ int ObDMLResolver::resolve_str_const(const ParseNode &parse_tree, ObString& path
                                              enable_mysql_compatible_dates,
                                              session_info->get_min_const_integer_precision(),
                                              nullptr != params_.secondary_namespace_))) {
-  } else if (OB_ISNULL(buf = static_cast<char*>(allocator_->alloc(val.get_string().length())))) { // deep copy str value
-    ret = common::OB_ALLOCATE_MEMORY_FAILED;
-  } else {
-    MEMCPY(buf, val.get_string().ptr(), val.get_string().length());
-    path_str.assign_ptr(buf, val.get_string().length());
+  } else if (OB_ISNULL(allocator_)) {
+    ret = OB_NOT_INIT;
+  } else if (OB_FAIL(ob_write_string(*allocator_, val.get_string(), path_str))) {
+    // Deep copy the resolved literal into the statement allocator. Unlike a raw
+    // alloc(len) + MEMCPY, ob_write_string() returns an empty string for an empty
+    // source without allocating, so a zero-length literal can no longer be
+    // reported as OB_ALLOCATE_MEMORY_FAILED (4013).
+    LOG_WARN("failed to deep-copy the resolved string literal", K(ret), K(val.get_meta()));
+  }
+
+  // A statement text that goes through the plan-cache / fast-parse path arrives
+  // here with the literal already replaced by a parameter marker: the node is
+  // T_QUESTIONMARK (== 26 == ObUnknownType) while the original bytes are still in
+  // str_value_/str_len_. ObResolverUtils::resolve_const() then yields an
+  // ObUnknownType object with NO string payload, so val.get_string() is empty even
+  // though the query text contains a perfectly good path. File-table paths are
+  // text literals, so fall back to the node bytes instead of failing the query.
+  if (OB_SUCC(ret) && path_str.empty() && OB_NOT_NULL(parse_tree.str_value_)
+      && parse_tree.str_len_ > 0
+      && (T_QUESTIONMARK == parse_tree.type_
+          || T_VARCHAR == parse_tree.type_
+          || T_CHAR == parse_tree.type_)) {
+    ObString raw_str(static_cast<int32_t>(parse_tree.str_len_), parse_tree.str_value_);
+    if (OB_FAIL(ob_write_string(*allocator_, raw_str, path_str))) {
+      LOG_WARN("failed to copy the raw string literal from the parse tree", K(ret));
+    }
   }
   return ret;
 }
@@ -12970,7 +12990,13 @@ int ObDMLResolver::canonicalize_local_path(const ObString &path, ObString &canon
     if (OB_SUCC(ret)) {
       char *rp = realpath(path_buf, real_buf);
       if (NULL != rp) {
-        canonical.assign_ptr(real_buf, static_cast<int32_t>(strlen(real_buf)));
+        // real_buf is a stack buffer: the canonical path must be deep-copied into
+        // the statement allocator, otherwise callers keep a dangling ObString.
+        ObString tmp;
+        tmp.assign_ptr(real_buf, static_cast<int32_t>(strlen(real_buf)));
+        if (OB_FAIL(ob_write_string(*allocator_, tmp, canonical))) {
+          LOG_WARN("failed to copy the canonical path", K(ret));
+        }
       } else {
         // the target itself may not exist yet (COPY destination): canonicalize
         // the deepest existing ancestor and keep the tail verbatim
@@ -12992,8 +13018,13 @@ int ObDMLResolver::canonicalize_local_path(const ObString &path, ObString &canon
                 real_buf[dlen] = '/';
                 MEMCPY(real_buf + dlen + 1, base, strlen(base));
                 real_buf[dlen + 1 + strlen(base)] = '\0';
-                canonical.assign_ptr(real_buf, static_cast<int32_t>(strlen(real_buf)));
-                done = true;
+                ObString tmp;
+                tmp.assign_ptr(real_buf, static_cast<int32_t>(strlen(real_buf)));
+                if (OB_FAIL(ob_write_string(*allocator_, tmp, canonical))) {
+                  LOG_WARN("failed to copy the canonical path", K(ret));
+                } else {
+                  done = true;
+                }
               }
             }
           }
@@ -13151,6 +13182,11 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableIte
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(resolve_str_const(*path_node, raw_path))) {
     LOG_WARN("failed to resolve file path literal", K(ret));
+  }
+
+  if (OB_SUCC(ret) && OB_UNLIKELY(raw_path.empty())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "file path must not be empty");
   }
 
   // canonicalize (path escape prevention), then enforce secure_file_priv
@@ -13378,12 +13414,19 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableIte
   }
 
   // alias + register
+  // DuckDB-style file table functions may be used without an explicit alias
+  // (`select * from read_csv('/p/f.csv')`), so synthesise an anonymous one instead
+  // of failing with OB_ERR_TABLE_WITHOUT_ALIAS.
   if (OB_FAIL(ret)) {
-  } else if (OB_ISNULL(alias_node) || 0 == alias_node->str_len_) {
-    ret = OB_ERR_TABLE_WITHOUT_ALIAS;
-    LOG_USER_ERROR(OB_ERR_TABLE_WITHOUT_ALIAS);
   } else {
-    alias_name.assign_ptr(alias_node->str_value_, static_cast<int32_t>(alias_node->str_len_));
+    if (OB_NOT_NULL(alias_node) && alias_node->str_len_ > 0) {
+      alias_name.assign_ptr(alias_node->str_value_, static_cast<int32_t>(alias_node->str_len_));
+    } else if (OB_FAIL(dml_stmt->generate_anonymous_view_name(*allocator_, alias_name))) {
+      LOG_WARN("failed to generate an anonymous alias for the file table", K(ret));
+    }
+  }
+  if (OB_FAIL(ret)) {
+  } else {
     new_table_item->table_id_ = generate_table_id();
     new_table_item->table_name_ = alias_name;
     new_table_item->alias_name_ = alias_name;
