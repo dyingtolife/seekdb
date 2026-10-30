@@ -1,0 +1,73 @@
+﻿# 18 - Parquet fixture decode and reader defects (round 6)
+
+Fixture: tools/deploy/mysql_test/test_suite/file_sql/data/simple.parquet.b64 (616 base64 chars,
+461 bytes), deployed by include/copy_file_sql_data.inc as simple.parquet.
+Expected block in r/mysql/file_sql_basic.result: row_count=7, min_c1=0, max_c1=6, sum_c1=21.
+
+## 1. The fixture is VALID Parquet (written by arrow2)
+
+Decoded with a hand-written thrift-compact dumper (evidence/mysqltest_run/scripts/80_pq_dump.py):
+ - magic PAR1 at 0 and at 457; footer length (LE u32 at 453) = 334; footer at 119.
+ - FileMetaData: version=2, num_rows=7, created_by="Arrow2 - Native Rust implementation of Arrow",
+   schema = [ root(num_children=1), c1(type=INT32(1), repetition_type=OPTIONAL(1)) ],
+   1 row group: columns=[chunk], total_byte_size=70, num_rows=7.
+ - ColumnChunk(1) -> ColumnMetaData:
+      1 type=INT32, 2 encodings=[RLE(3), PLAIN(0)], 3 path_in_schema=["c1"], 4 codec=SNAPPY(1),
+      5 num_values=7, 6 total_uncompressed_size=68, 7 total_compressed_size=70,
+      9 data_page_offset=4, 12 statistics{3 null_count=0, 5 max_value=6, 6 min_value=0}.
+ - Page at offset 4 (PageHeader, 38 bytes, ends at 42):
+      1 type = 3  -> DATA_PAGE_V2   (DATA_PAGE is 0)
+      2 uncompressed_page_size = 30, 3 compressed_page_size = 32
+      8 data_page_header_v2 { 1 num_values=7, 2 num_nulls=0, 3 num_rows=7, 4 encoding=PLAIN(0),
+                              5 definition_levels_byte_length=2, 6 repetition_levels_byte_length=0,
+                              7 is_compressed=true, 8 statistics{...} }
+ - Page body (42..73): definition levels "03 7f" = RLE/bit-packed header 0x03 (1 group of 8,
+   bit width 1) + 0x7f = seven 1s (all rows defined), then the values section
+   "1c 6c 00 00 00 00 01 00 00 00 ... 06 00 00 00" = a single raw SNAPPY block
+   (varint 0x1c = 28 uncompressed bytes, literal tag 0x6c = 28-byte literal) holding the
+   seven little-endian int32 values 0..6.
+So the values, the row count and the aggregate are all consistent with the .result block.
+
+## 2. Why the server returns 4070 (OB_INVALID_DATA)
+
+src/sql/engine/file/ob_parquet_reader.cpp decodes the thrift structures with field ids that do not
+match the Parquet Thrift IDL, and only understands DataPage v1. Four independent defects:
+
+D1 (this is the one that produces 4070) - SchemaElement field ids are shifted:
+   the code reads 2=num_children, 3=name, 4=repetition_type, 5=converted_type, while the IDL is
+   1=type, 2=type_length, 3=repetition_type, 4=name, 5=num_children. The root schema element
+   therefore looks like a *leaf* (type=-1, num_children_=0, empty name), so `leaves` becomes
+   ["", "c1"] with 2 entries while the row group has 1 column chunk. read_group_as_rows() then hits
+   `row_groups[group_idx].size() != leaves.size()` (ob_parquet_reader.cpp:868) and returns
+   OB_INVALID_DATA, which the cursor reports as 4070 "Invalid data".
+
+D2 - ColumnMetaData field ids are shifted by one: codec is read from field 3 (path_in_schema),
+   num_values from field 4 (codec -> 1), data_page_offset from field 5 (num_values -> 7), and the
+   real offset field 9 is never read. Even with D1 fixed the reader would parse a "page header" at
+   byte 7 and with codec=-1 would fail with OB_NOT_SUPPORTED.
+
+D3 - Only DATA_PAGE (v1) is accepted (`if (page_type != 0) { ret = OB_NOT_SUPPORTED; }`). The
+   fixture is DATA_PAGE_V2 (type 3, header in PageHeader field 8, whose layout is
+   num_values/num_nulls/num_rows/encoding/definition_levels_byte_length/
+   repetition_levels_byte_length/is_compressed/statistics), and in v2 the level sections are stored
+   uncompressed with explicit byte lengths ahead of the (optionally compressed) values.
+
+D4 - SNAPPY framing: the code assumes Hadoop-style pages made of `[u32 LE uncompressed_size]
+   [snappy block]` chunks. Parquet stores one raw snappy block per page whose uncompressed length is
+   the varint header - which ObSnappyDecoder::decompress() already reads. A parquet page therefore
+   always fails the `blk_unc` comparison here ("written != blk_unc"), and the loop's `break` after
+   the first block leaves plain_len wrong for multi-block pages anyway.
+
+D5 (v1 only, latent) - definition levels for v1 pages are RLE/bit-packed *prefixed by a 4-byte LE
+   length*; the current code guesses with a one-byte strip and assumes "all defined".
+
+## 3. Fix plan (not applied in round 6 - see report)
+
+ - rewrite parse_footer_meta()/read_file() metadata parsing with the real IDL field ids
+   (SchemaElement 1/3/4/5, ColumnMetaData 1..9/11/12, RowGroup 1..3, PageHeader 1/2/3/5/8);
+ - add a DATA_PAGE_V2 decode path: levels first (rep then def, byte lengths from the header, not
+   compressed), then the values section (snappy/uncompressed per is_compressed);
+ - keep DATA_PAGE v1 support with the 4-byte-length RLE level prefix;
+ - snappy: feed the whole values section to ObSnappyDecoder (single block), no u32 framing;
+ - keep column pruning and the public API (read_file / read_group_as_rows) unchanged; the parquet
+   unit test is TEST_F(..., DISABLED_ParquetFixtureDecode) so no test expectations change.

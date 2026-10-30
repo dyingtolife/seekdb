@@ -57,11 +57,17 @@ public:
   virtual bool is_affect_found_rows() const { return is_select_explain(); }
   bool is_explain_extended() const { return EXPLAIN_EXTENDED == format_
                                             || EXPLAIN_EXTENDED_NOADDR == format_; }
+  // True when the statement was introduced by DESCRIBE/DESC rather than EXPLAIN.
+  // DESCRIBE SELECT * FROM read_csv(...) returns column metadata instead of the
+  // plan text (DuckDB semantics).
+  void set_describe(const bool describe) { is_describe_ = describe; }
+  bool is_describe() const { return is_describe_; }
 
   DECLARE_VIRTUAL_TO_STRING;
 private:
   //bool  verbose_;
   ExplainType format_;
+  bool is_describe_;
   ObExplainDisplayOpt display_opt_;
   ObDMLStmt *explain_query_stmt_;
   common::ObString into_table_;

@@ -1,0 +1,12 @@
+﻿#!/bin/bash
+# scp shim: `scp -q <files...> host:<dir>/` with host being this machine.
+args=()
+for a in "$@"; do
+  case "$a" in
+    -q|-r|-p) ;;
+    *:*) dest="${a#*:}";;
+    *) args+=("$a");;
+  esac
+done
+mkdir -p "$dest"
+for f in "${args[@]}"; do cp -f "$f" "$dest"/; done

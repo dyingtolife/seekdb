@@ -58,6 +58,41 @@ static bool detect_file_describe(const ObDMLStmt *child_stmt)
   return is_file_desc;
 }
 
+﻿// DESCRIBE <file table>: emit one metadata row per inferred column. The result
+// columns are column_name, column_type, null, key, default and extra (the DuckDB
+// DESCRIBE layout); key/default/extra are always NULL for a file table, and the
+// header itself is supplied by the result-set field metadata, not as a data row.
+static int fill_file_describe_rows(ObLogValues &values_op, const ObDMLStmt &child_stmt)
+{
+  int ret = OB_SUCCESS;
+  const TableItem *ftable = child_stmt.get_table_item(0);
+  const ObFileCursorDef *fdef = NULL;
+  if (OB_ISNULL(ftable) || OB_ISNULL(ftable->values_table_def_)
+      || OB_ISNULL(fdef = ftable->values_table_def_->file_def_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("file table has no cursor definition", K(ret));
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < fdef->columns_.count(); ++i) {
+      const ObFileCursorDef::ColDef &cd = fdef->columns_.at(i);
+      ObObj cells[6];
+      cells[0].set_varchar(cd.name_);
+      cells[1].set_varchar(ObString::make_string(
+          file_column_type_str(static_cast<ObFileColumnType>(cd.type_))));
+      cells[2].set_varchar(ObString::make_string(cd.nullable_ ? "YES" : "NO"));
+      cells[3].set_null();
+      cells[4].set_null();
+      cells[5].set_null();
+      ObNewRow row;
+      row.cells_ = cells;
+      row.count_ = 6;
+      if (OB_FAIL(values_op.add_row(row))) {
+        LOG_WARN("failed to add a describe row", K(ret), K(i), K(cd.name_));
+      }
+    }
+  }
+  return ret;
+}
+
 int ObExplainLogPlan::generate_normal_raw_plan()
 {
   int ret = OB_SUCCESS;
@@ -69,6 +104,7 @@ int ObExplainLogPlan::generate_normal_raw_plan()
     ObLogicalOperator *top = NULL;
     ObLogValues *values_op = NULL;
     int64_t batch_size = 0;
+    bool file_desc = false;
     const ObExplainStmt *explain_stmt = static_cast<const ObExplainStmt*>(get_stmt());
     if (OB_ISNULL(child_stmt = explain_stmt->get_explain_query_stmt())) {
       ret = OB_ERR_UNEXPECTED;
@@ -77,66 +113,6 @@ int ObExplainLogPlan::generate_normal_raw_plan()
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_ERROR("failed to create log plan for explain stmt");
     } else if (OB_FAIL(child_plan->generate_plan())) {
-    } else if (OB_UNLIKELY(detect_file_describe(child_stmt))) {
-      // file-table describe: fill the values op with column metadata rows
-      const TableItem *ftable = child_stmt->get_table_item(0);
-      const ObFileCursorDef *fdef = ftable->values_table_def_->file_def_;
-      if (OB_ISNULL(values_op) || OB_ISNULL(fdef)) {
-        ret = OB_ERR_UNEXPECTED;
-      } else {
-        static const char *K_COL = "column_name";
-        static const char *K_TYPE = "column_type";
-        static const char *K_NULL = "null";
-        static const char *K_KEY = "key";
-        static const char *K_DEF = "default";
-        static const char *K_EXTRA = "extra";
-        // header row
-        {
-          ObObj objs[6];
-          const char *vals[6] = {K_COL, K_TYPE, K_NULL, K_KEY, K_DEF, K_EXTRA};
-          for (int64_t c = 0; OB_SUCC(ret) && c < 6; ++c) {
-            objs[c].set_varchar(ObString::make_string(vals[c]));
-          }
-          if (OB_SUCC(ret)) {
-            ObNewRow row;
-            row.cells_ = objs;
-            row.count_ = 6;
-            if (OB_FAIL(values_op->add_row(row))) {}
-          }
-        }
-        for (int64_t i = 0; OB_SUCC(ret) && i < fdef->columns_.count(); ++i) {
-          const ObFileCursorDef::ColDef &cd = fdef->columns_.at(i);
-          ObObj objs[6];
-          objs[0].set_varchar(cd.name_);
-          const char *ts = file_column_type_str(static_cast<ObFileColumnType>(cd.type_));
-          objs[1].set_varchar(ObString::make_string(ts));
-          objs[2].set_varchar(ObString::make_string(cd.nullable_ ? "YES" : "NO"));
-          objs[3].set_varchar(ObString::make_string(""));
-          objs[4].set_varchar(ObString::make_string("NULL"));
-          objs[5].set_varchar(ObString::make_string(""));
-          if (OB_SUCC(ret)) {
-            ObNewRow row;
-            row.cells_ = objs;
-            row.count_ = 6;
-            if (OB_FAIL(values_op->add_row(row))) {}
-          }
-        }
-        if (OB_SUCC(ret)) {
-          values_op->set_op_id(0);
-          set_max_op_id(1);
-        }
-        // skip the normal plan-text path
-        if (OB_SUCC(ret)) {
-          get_optimizer_context().get_all_exprs().reuse();
-          if (OB_FAIL(allocate_output_expr_for_values_op(*values_op))) {
-          } else {
-            get_optimizer_context().set_plan_type(ObPhyPlanType::OB_PHY_PLAN_LOCAL,
-                                                  ObPhyPlanType::OB_PHY_PLAN_LOCAL,
-                                                  false);
-          }
-        }
-        return ret;
-      }
     } else if (OB_FAIL(remove_duplicate_constraints())) {
     } else if (OB_FAIL(check_explain_generate_plan_with_outline(child_plan))) {
     } else if (OB_FAIL(ObCodeGenerator::detect_batch_size(*child_plan, batch_size))) {
@@ -148,33 +124,44 @@ int ObExplainLogPlan::generate_normal_raw_plan()
       top->mark_is_plan_root();
       child_plan->get_optimizer_context().set_batch_size(batch_size);
       values_op = static_cast<ObLogValues*>(top);
-      values_op->set_explain_plan(child_plan);
-      ObSqlPlan sql_plan(get_allocator());
-      sql_plan.set_session_info(get_optimizer_context().get_session_info());
-      ObExplainLogPlan *explain_plan = static_cast<ObExplainLogPlan*>(child_plan);
-      ObSEArray<common::ObString, 64> plan_strs;
-      const ObString& into_table = explain_stmt->get_into_table();
-      const ObString& statement_id = explain_stmt->get_statement_id();
-      if (OB_FAIL(sql_plan.store_sql_plan_for_explain(get_optimizer_context().get_exec_ctx(),
-                                                      child_plan,
-                                                      explain_stmt->get_explain_type(),
-                                                      0 == into_table.length() ? "PLAN_TABLE" : into_table,
-                                                      0 == statement_id.length() ? "" : statement_id,
-                                                      explain_stmt->get_display_opt(),
-                                                      plan_strs))) {
+      // DESCRIBE and EXPLAIN share a statement type; only a DESCRIBE of a single
+      // file table produces column metadata, every other case keeps the text plan.
+      file_desc = explain_stmt->is_describe() && detect_file_describe(child_stmt);
+      if (file_desc) {
+        if (OB_FAIL(fill_file_describe_rows(*values_op, *child_stmt))) {
+          LOG_WARN("failed to build the file-table describe rows", K(ret));
+        } else {
+          optimizer_context_.set_packed(false);
+        }
       } else {
-        //For explain stmt, we can do pack at the stage of expr alloc,
-        //But we need to use the FALSE flag to tell the driver 
-        //to use normal encoding instead of memcopy
-        optimizer_context_.set_packed(false);
-      }
-      for (int64_t i = 0; OB_SUCC(ret) && i < plan_strs.count(); ++i) {
-        ObObj obj;
-        obj.set_varchar(plan_strs.at(i));
-        ObNewRow row;
-        row.cells_ = &obj;
-        row.count_ = 1;
-        if (OB_FAIL(values_op->add_row(row))) {
+        values_op->set_explain_plan(child_plan);
+        ObSqlPlan sql_plan(get_allocator());
+        sql_plan.set_session_info(get_optimizer_context().get_session_info());
+        ObExplainLogPlan *explain_plan = static_cast<ObExplainLogPlan*>(child_plan);
+        ObSEArray<common::ObString, 64> plan_strs;
+        const ObString& into_table = explain_stmt->get_into_table();
+        const ObString& statement_id = explain_stmt->get_statement_id();
+        if (OB_FAIL(sql_plan.store_sql_plan_for_explain(get_optimizer_context().get_exec_ctx(),
+                                                        child_plan,
+                                                        explain_stmt->get_explain_type(),
+                                                        0 == into_table.length() ? "PLAN_TABLE" : into_table,
+                                                        0 == statement_id.length() ? "" : statement_id,
+                                                        explain_stmt->get_display_opt(),
+                                                        plan_strs))) {
+        } else {
+          //For explain stmt, we can do pack at the stage of expr alloc,
+          //But we need to use the FALSE flag to tell the driver
+          //to use normal encoding instead of memcopy
+          optimizer_context_.set_packed(false);
+        }
+        for (int64_t i = 0; OB_SUCC(ret) && i < plan_strs.count(); ++i) {
+          ObObj obj;
+          obj.set_varchar(plan_strs.at(i));
+          ObNewRow row;
+          row.cells_ = &obj;
+          row.count_ = 1;
+          if (OB_FAIL(values_op->add_row(row))) {
+          }
         }
       }
       if (OB_SUCC(ret)) {
@@ -185,6 +172,36 @@ int ObExplainLogPlan::generate_normal_raw_plan()
     }
     get_optimizer_context().get_all_exprs().reuse();
     if (OB_FAIL(ret)) {
+    } else if (OB_UNLIKELY(NULL == values_op)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (file_desc) {
+      // one const output expr per metadata column: the values operator copies its
+      // stored cells into the datums of its output exprs and rejects type
+      // mismatches, so the six varchar columns need six (varchar) exprs.
+      for (int64_t c = 0; OB_SUCC(ret) && c < 6; ++c) {
+        ObConstRawExpr *output = NULL;
+        if (OB_FAIL(optimizer_context_.get_expr_factory().create_raw_expr(T_VARCHAR, output))) {
+        } else if (OB_ISNULL(output)) {
+          ret = OB_ERR_UNEXPECTED;
+        } else {
+          ObObj v;
+          v.set_varchar(" ");
+          v.set_collation_type(ObCharset::get_system_collation());
+          output->set_value(v);
+          if (OB_FAIL(output->formalize(optimizer_context_.get_session_info()))) {
+          } else if (OB_FAIL(values_op->get_output_exprs().push_back(output))) {
+          } else if (OB_FAIL(get_optimizer_context().get_all_exprs().append(output))) {
+          }
+        }
+      }
+      if (OB_SUCC(ret)) {
+        values_op->set_branch_id(0);
+        values_op->set_id(0);
+        values_op->set_op_id(0);
+        get_optimizer_context().set_plan_type(ObPhyPlanType::OB_PHY_PLAN_LOCAL,
+                                              ObPhyPlanType::OB_PHY_PLAN_LOCAL,
+                                              false);
+      }
     } else if (OB_FAIL(allocate_output_expr_for_values_op(*values_op))) {
     } else {
       get_optimizer_context().set_plan_type(ObPhyPlanType::OB_PHY_PLAN_LOCAL,

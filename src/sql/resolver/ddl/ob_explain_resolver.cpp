@@ -26,11 +26,14 @@ const static int64_t EXPLAIN_DISPLAY_OPTION = 1;
 const static int64_t EXPLAIN_INTO_TABLE = 2;
 const static int64_t EXPLAIN_STMT_ID = 3;
 const static int64_t EXPLAIN_CHILD_STMT = 4;
+// optional 6th child: T_INT keyword marker, 0 = EXPLAIN, 1 = DESCRIBE/DESC
+const static int64_t EXPLAIN_DESC_FLAG = 5;
 int ObExplainResolver::resolve(const ParseNode &parse_tree)
 {
   int ret = OB_SUCCESS;
   ObExplainStmt *explain_stmt = NULL;
-  if (!(T_EXPLAIN == parse_tree.type_  && 5 == parse_tree.num_child_)) {
+  if (!(T_EXPLAIN == parse_tree.type_
+        && (5 == parse_tree.num_child_ || 6 == parse_tree.num_child_))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("invalid EXPLAIN syntax",
              "type", parse_tree.type_,
@@ -113,6 +116,16 @@ int ObExplainResolver::resolve(const ParseNode &parse_tree)
             break;
           }
         }
+      }
+    }
+    ParseNode *desc_node = 6 == parse_tree.num_child_
+        ? parse_tree.children_[EXPLAIN_DESC_FLAG] : NULL;
+    if (OB_SUCC(ret) && NULL != desc_node) {
+      if (OB_UNLIKELY(T_INT != desc_node->type_)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("invalid describe keyword marker", K(ret), "type", desc_node->type_);
+      } else {
+        explain_stmt->set_describe(0 != desc_node->value_);
       }
     }
     ParseNode *opt_node = parse_tree.children_[EXPLAIN_DISPLAY_OPTION];

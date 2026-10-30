@@ -1,0 +1,4 @@
+﻿#!/bin/bash
+# ssh shim: the fixture host IS this machine (host_ip() of the local instance).
+shift
+exec bash -c "$*"

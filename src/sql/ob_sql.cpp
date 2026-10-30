@@ -275,7 +275,7 @@ int ObSql::fill_result_set(ObResultSet &result_set,
       bool file_desc = false;
       if (basic_stmt.is_explain_stmt()) {
         const ObExplainStmt *es = static_cast<const ObExplainStmt*>(&basic_stmt);
-        const ObDMLStmt *child = es->get_explain_query_stmt();
+        const ObDMLStmt *child = es->is_describe() ? es->get_explain_query_stmt() : NULL;
         if (OB_NOT_NULL(child) && child->is_values_table_query()
             && OB_NOT_NULL(child->get_table_item(0))
             && OB_NOT_NULL(child->get_table_item(0)->values_table_def_)
