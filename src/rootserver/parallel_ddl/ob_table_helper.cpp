@@ -214,13 +214,35 @@ int ObTableHelper::create_tables_(const ObString *ddl_stmt_str)
     } else {
       // AI columns: persist one __all_ai_column row (+ history) per AI
       // column declared by any created table, in the same transaction.
+      // The resolver runs before the table id is assigned, so fill in the
+      // real table id on each AI entry here (the ALTER path does the same
+      // in ObDDLService::add_new_column_to_table_schema).
       for (int64_t i = 0; OB_SUCC(ret) && i < new_tables_.count(); ++i) {
         ObTableSchema &new_table = new_tables_.at(i);
-        if (new_table.get_ai_column_count() > 0
-            && OB_FAIL(schema_service_impl->get_ai_column_sql_service().create_ai_columns(
-                   new_table, get_trans_()))) {
-          LOG_WARN("failed to persist ai column metadata", K(ret),
-                   K(new_table.get_table_id()));
+        if (new_table.get_ai_column_count() > 0) {
+          ObIArray<ObAiColumnSchema> &ai_columns =
+              const_cast<ObIArray<ObAiColumnSchema> &>(new_table.get_ai_columns());
+          for (int64_t j = 0; OB_SUCC(ret) && j < ai_columns.count(); ++j) {
+            ObAiColumnSchema &ai_col = ai_columns.at(j);
+            ai_col.table_id_ = new_table.get_table_id();
+            if (common::OB_INVALID_ID == ai_col.column_id_) {
+              const ObColumnSchemaV2 *user_col =
+                  new_table.get_column_schema(ai_col.column_name_);
+              if (OB_ISNULL(user_col)) {
+                ret = OB_ERR_UNEXPECTED;
+                LOG_WARN("ai column entry has no user column", K(ret),
+                         K(ai_col.column_name_), K(new_table.get_table_id()));
+              } else {
+                ai_col.column_id_ = user_col->get_column_id();
+              }
+            }
+          }
+          if (OB_SUCC(ret)
+              && OB_FAIL(schema_service_impl->get_ai_column_sql_service().create_ai_columns(
+                     new_table, get_trans_()))) {
+            LOG_WARN("failed to persist ai column metadata", K(ret),
+                     K(new_table.get_table_id()));
+          }
         }
       }
     }
