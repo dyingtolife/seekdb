@@ -1,4 +1,4 @@
-﻿#!/bin/bash
+#!/bin/bash
 # Probe the three round-6 targets on the running instance.
 set -u
 ROOT=/home/hjy/work/seekdb

@@ -1,0 +1,17 @@
+﻿Round 6 commit: 3661d57ee  wip(file-sql): DESCRIBE <file table> column metadata via a distinct keyword marker
+(6 source paths + this evidence directory; the tree is otherwise clean.)
+
+Build state when the round ended (13:47): `python3 build.py build //src/observer:seekdb`
+still running, log /tmp/build_r6f.log, 1,656/1,843 actions done. The two earlier attempts
+died (OOM at 1,670 and a lost session at 1,656) while a second build was running in
+seekdb-05b; build/bin/src/observer/seekdb is still the 8e7f1b101 binary (Oct 30 12:52).
+
+Next round, in order:
+  1. wait for /tmp/build_r6f.log to print "Build completed"/EXIT=0 and check for "error:";
+  2. kill the instance on 2886 (it serves the old binary), then
+     bash evidence/mysqltest_run/scripts/78_boot_r6.sh /home/hjy/work/fs_e2e/r13
+  3. bash evidence/mysqltest_run/scripts/81_probe_r6.sh   # describe / explain / parquet / copy
+     expected after this change: describe -> 6 columns, 8 rows, "id BIGINT NO NULL NULL NULL" ...
+  4. bash evidence/mysqltest_run/scripts/79_run_suite_r6.sh   # suite (no --record yet)
+  5. only if the suite passes end to end: re-run with --record and label the .result
+     "recorded from real output".

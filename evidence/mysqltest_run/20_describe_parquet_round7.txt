@@ -1,0 +1,62 @@
+# 20 - Round 7 verification: DESCRIBE metadata and Parquet decoding
+
+binary: /home/hjy/work/seekdb/build/bin/src/observer/seekdb
+sha256: b395decf2c9e44f455a36533a7bc25cd42b72ff427fd381b834dff8fee2ae51b
+size:   1304288312 bytes
+date:   2026-10-30T14:45:09+08:00
+fixture simple.parquet: 461 bytes, sha256 6320823b8bd1f4309f6584f5d6e64d98b60dc731af039b6db3b5a51677bba13d
+
+## 1. DESCRIBE of a CSV file table (6 metadata columns, header from field metadata)
+column_name	column_type	null	key	default	extra
+id	BIGINT	NO	NULL	NULL	NULL
+name	VARCHAR	NO	NULL	NULL	NULL
+score	DOUBLE	NO	NULL	NULL	NULL
+active	BOOLEAN	NO	NULL	NULL	NULL
+day	DATE	YES	NULL	NULL	NULL
+created	DATETIME	YES	NULL	NULL	NULL
+note	VARCHAR	NO	NULL	NULL	NULL
+id__2	BIGINT	NO	NULL	NULL	NULL
+
+## 2. DESCRIBE of a JSONL file table
+column_name	column_type	null	key	default	extra
+id	BIGINT	NO	NULL	NULL	NULL
+name	VARCHAR	NO	NULL	NULL	NULL
+score	DOUBLE	NO	NULL	NULL	NULL
+active	BOOLEAN	NO	NULL	NULL	NULL
+day	DATE	NO	NULL	NULL	NULL
+note	VARCHAR	NO	NULL	NULL	NULL
+
+## 3. EXPLAIN still prints the text plan (the is_describe() marker is distinct)
+Query Plan
+==============================================================
+|ID|OPERATOR           |NAME           |EST.ROWS|EST.TIME(us)|
+--------------------------------------------------------------
+|0 |VALUES TABLE ACCESS|ANONYMOUS_VIEW1|5       |1           |
+==============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([ANONYMOUS_VIEW1.id], [ANONYMOUS_VIEW1.name], [ANONYMOUS_VIEW1.score], [ANONYMOUS_VIEW1.active], [ANONYMOUS_VIEW1.day], [ANONYMOUS_VIEW1.created],
+       [ANONYMOUS_VIEW1.note], [ANONYMOUS_VIEW1.id__2]), filter(nil)
+      access([ANONYMOUS_VIEW1.id], [ANONYMOUS_VIEW1.name], [ANONYMOUS_VIEW1.score], [ANONYMOUS_VIEW1.active], [ANONYMOUS_VIEW1.day], [ANONYMOUS_VIEW1.created],
+       [ANONYMOUS_VIEW1.note], [ANONYMOUS_VIEW1.id__2])
+
+## 4. Parquet aggregate (expected: 7 / 0 / 6 / 21)
+row_count	min_c1	max_c1	sum_c1
+7	0	6	21
+
+## 5. Parquet full scan (expected: the seven INT32 values 0..6)
+c1
+0
+1
+2
+3
+4
+5
+6
+
+## 6. DESCRIBE of the parquet file table
+column_name	column_type	null	key	default	extra
+c1	BIGINT	NO	NULL	NULL	NULL
+
+## 7. COPY is still unimplemented (expected 1235)
+ERROR 1235 (0A000) at line 1: statement type not supported

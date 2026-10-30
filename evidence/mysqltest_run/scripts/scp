@@ -1,12 +1,19 @@
-﻿#!/bin/bash
-# scp shim: `scp -q <files...> host:<dir>/` with host being this machine.
+#!/bin/bash
+# scp shim: `scp -q <files...> host:<dir>/` where the "host" is this machine.
+# The file-sql fixtures are installed over ssh/scp by the suite include, so the
+# shims translate the remote copy into a local copy.
 args=()
+dest=""
 for a in "$@"; do
   case "$a" in
     -q|-r|-p) ;;
-    *:*) dest="${a#*:}";;
-    *) args+=("$a");;
+    *:*) dest="${a#*:}" ;;
+    *) args+=("$a") ;;
   esac
 done
+if [ -z "$dest" ]; then
+  echo "scp shim: no remote destination in: $*" >&2
+  exit 1
+fi
 mkdir -p "$dest"
 for f in "${args[@]}"; do cp -f "$f" "$dest"/; done

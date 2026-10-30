@@ -1,4 +1,4 @@
-﻿#!/bin/bash
+#!/bin/bash
 # Round 6 boot: DEFAULT parameters only. Port 2886.
 set -u
 ROOT=/home/hjy/work/seekdb

@@ -1,4 +1,4 @@
-﻿#!/bin/bash
+#!/bin/bash
 # Round 6 mysqltest runner for test_suite/file_sql.
 # Contract expected by the suite: OBMYSQL_MS0 / OBMYSQL_PORT / OBMYSQL_USR /
 # OBMYSQL_PWD / OBSERVER_DIR / IS_BUSINESS, a `mysql_test` symlink in the CWD and

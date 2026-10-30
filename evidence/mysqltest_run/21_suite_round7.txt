@@ -1,0 +1,7 @@
+[2026-10-30 14:45:07] mysqltest: At line 57: query 'copy (select id, name, score
+from read_csv('$FILE_SQL_DATA_DIR/basic.csv')
+order by id)
+to '$FILE_SQL_DATA_DIR/export.csv'
+       (format csv, header, nullstr 'NULL')' failed: 1235: statement type not supported
+not ok
+MYSQLTEST_EXIT=1
