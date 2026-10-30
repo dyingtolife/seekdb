@@ -4110,6 +4110,13 @@ int ObSchemaServiceSQLImpl::get_not_core_table_schema(
       && OB_FAIL(fetch_ai_column_info(schema_status, table_id, schema_version,
                                       sql_client, allocator, *table_schema))) {
   }
+  if (OB_FAIL(ret)) {
+    // A failing sub-fetch used to leave a half-built (column_cnt == 0) table
+    // schema behind, and WARN-level logs are not visible in this build, so the
+    // failure looked like a silent "table has no columns". Always report it.
+    LOG_ERROR("fetch not core table schema failed", K(ret), K(table_id),
+              K(schema_version), K(is_schema_fetch_dependency));
+  }
   return ret;
 }
 
@@ -4829,6 +4836,27 @@ int ObSchemaServiceSQLImpl::fetch_foreign_key_array_for_simple_table_schemas(
   return ret;
 }
 
+// __all_ai_column* metadata columns are declared as SIGNED integers, so cells
+// returned by the inner SQL result carry ObIntTC. ObObj::get_uint64() only
+// accepts ObUIntTC (see ob_object.h) and answers OB_OBJ_TYPE_ERROR (-4001) for
+// every other type class. Reading these columns with get_uint() therefore made
+// fetch_ai_column_info() fail on every AI table, which poisoned the whole
+// get_not_core_table_schema() fetch and left half-built (column_cnt == 0)
+// schemas in the cache. Read through int64 and convert instead.
+static int read_meta_uint(ObMySQLResult *result, const char *column_name, uint64_t &value)
+{
+  int ret = OB_SUCCESS;
+  int64_t signed_value = 0;
+  if (OB_ISNULL(result) || OB_ISNULL(column_name)) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_FAIL(result->get_int(column_name, signed_value))) {
+    LOG_WARN("failed to read signed metadata field", K(ret), KCSTRING(column_name));
+  } else {
+    value = static_cast<uint64_t>(signed_value);
+  }
+  return ret;
+}
+
 int ObSchemaServiceSQLImpl::fetch_ai_column_info(
     const ObRefreshSchemaStatus &schema_status,
     const uint64_t table_id,
@@ -4873,7 +4901,7 @@ int ObSchemaServiceSQLImpl::fetch_ai_column_info(
       ObArray<uint64_t> seen_column_ids;
       while (OB_SUCC(ret) && OB_SUCC(result->next())) {
         uint64_t column_id = 0;
-        if (OB_FAIL(result->get_uint("column_id", column_id))) {
+        if (OB_FAIL(read_meta_uint(result, "column_id", column_id))) {
           LOG_WARN("failed to read ai column id", K(ret));
           break;
         }
@@ -4890,11 +4918,11 @@ int ObSchemaServiceSQLImpl::fetch_ai_column_info(
           ObString tmp_str;
           int64_t tmp_int = 0;
           ai_column.is_embedding_ = false;
-          if (OB_FAIL(result->get_uint("table_id", ai_column.table_id_))) {
+          if (OB_FAIL(read_meta_uint(result, "table_id", ai_column.table_id_))) {
             LOG_WARN("failed to read ai table id", K(ret));
-          } else if (OB_FAIL(result->get_uint("column_id", ai_column.column_id_))) {
+          } else if (OB_FAIL(read_meta_uint(result, "column_id", ai_column.column_id_))) {
             LOG_WARN("failed to read ai column id", K(ret));
-          } else if (OB_FAIL(result->get_uint("definition_version", ai_column.definition_version_))) {
+          } else if (OB_FAIL(read_meta_uint(result, "definition_version", ai_column.definition_version_))) {
             LOG_WARN("failed to read ai definition version", K(ret));
           } else if (OB_FAIL(result->get_int("max_retries", ai_column.max_retries_))) {
             LOG_WARN("failed to read ai max retries", K(ret));
@@ -4902,11 +4930,11 @@ int ObSchemaServiceSQLImpl::fetch_ai_column_info(
             LOG_WARN("failed to read ai is_embedding", K(ret));
           } else if (OB_FAIL(result->get_int("vector_dimension", ai_column.vector_dimension_))) {
             LOG_WARN("failed to read ai vector dimension", K(ret));
-          } else if (OB_FAIL(result->get_uint("state_column_id", ai_column.state_column_id_))) {
+          } else if (OB_FAIL(read_meta_uint(result, "state_column_id", ai_column.state_column_id_))) {
             LOG_WARN("failed to read ai state column id", K(ret));
-          } else if (OB_FAIL(result->get_uint("request_column_id", ai_column.request_column_id_))) {
+          } else if (OB_FAIL(read_meta_uint(result, "request_column_id", ai_column.request_column_id_))) {
             LOG_WARN("failed to read ai request column id", K(ret));
-          } else if (OB_FAIL(result->get_uint("result_spec_column_id", ai_column.result_spec_column_id_))) {
+          } else if (OB_FAIL(read_meta_uint(result, "result_spec_column_id", ai_column.result_spec_column_id_))) {
             LOG_WARN("failed to read ai result spec column id", K(ret));
           } else {
           ai_column.is_embedding_ = (tmp_int != 0);
