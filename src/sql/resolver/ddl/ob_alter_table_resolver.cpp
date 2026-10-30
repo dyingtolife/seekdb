@@ -417,6 +417,11 @@ int ObAlterTableResolver::resolve_action_list(const ParseNode &node)
             } else {
               arg.column_name_.assign_ptr(col_node->str_value_,
                                           static_cast<int32_t>(col_node->str_len_));
+              // ROUND 15 FIX (C): remember the real table id of the ALTER
+              // target while resolving; the executor cannot recover it from
+              // alter_table_schema_ (scratch schema of a non-DDL action).
+              arg.table_id_ = NULL == table_schema_ ? OB_INVALID_ID
+                                                    : table_schema_->get_table_id();
               if (OB_NOT_NULL(where_node)) {
                 // children_[0] is the expr; children_[1] hints (NULL-able)
                 ParseNode *expr_node = where_node->children_[0];

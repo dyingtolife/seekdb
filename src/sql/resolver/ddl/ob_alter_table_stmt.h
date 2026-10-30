@@ -52,7 +52,12 @@ public:
     common::ObString column_name_;
     common::ObString where_clause_;   // empty = all rows
     bool has_status_pseudo_;          // WHERE references the status pseudo column
-    AiRetryArg() : has_status_pseudo_(false) {}
+    // ROUND 15 FIX (C): table id of the ALTER target as resolved by the
+    // resolver. alter_table_schema_.get_table_id() is not trustworthy at
+    // execution time (it is the DDL scratch schema of a non-schema-changing
+    // action), so the real id is captured here.
+    uint64_t table_id_;
+    AiRetryArg() : has_status_pseudo_(false), table_id_(common::OB_INVALID_ID) {}
   };
   int add_ai_retry_arg(const AiRetryArg &arg) { return ai_retry_args_.push_back(arg); }
   common::ObIArray<AiRetryArg> &get_ai_retry_args() { return ai_retry_args_; }

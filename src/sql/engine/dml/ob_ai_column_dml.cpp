@@ -17,6 +17,7 @@
 #include "sql/session/ob_sql_session_info.h"
 #include "sql/engine/ob_exec_context.h"
 #include "share/schema/ob_ai_column_task_service.h"
+#include "share/schema/ob_multi_version_schema_service.h"
 #include "share/inner_table/ob_inner_table_schema.h"
 #include "query/session/ob_inner_sql_connection_access.h"
 
@@ -513,6 +514,165 @@ int ObAiColumnDMLUtils::check_no_direct_assignment(
   return ret;
 }
 
+namespace
+{
+
+// True when one of the statement's column expressions references the given
+// schema column. ROUND 15 FIX (B): the raw column expressions of a resolved
+// statement still carry an unbound table id at this stage (they are bound only
+// during plan generation), so AI columns are matched by (column id, name)
+// against the tables the statement reads instead.
+bool ai_col_is_referenced(const ObIArray<ObColumnRefRawExpr *> &col_exprs,
+                          const uint64_t column_id,
+                          const ObString &column_name)
+{
+  bool found = false;
+  for (int64_t i = 0; !found && i < col_exprs.count(); ++i) {
+    const ObColumnRefRawExpr *expr = col_exprs.at(i);
+    if (OB_NOT_NULL(expr) && expr->get_column_id() == column_id) {
+      const ObString &expr_name = expr->get_column_name();
+      found = expr_name.empty() || 0 == expr_name.case_compare(column_name);
+    }
+  }
+  return found;
+}
+
+// Column-level strict read probe: does the referenced AI column have at least
+// one row whose hidden state column is not READY?
+int ai_probe_column_not_ready(ObSchemaGetterGuard &guard,
+                              const ObTableSchema &table_schema,
+                              const ObAiColumnSchema &ai_col,
+                              const uint64_t table_id)
+{
+  int ret = OB_SUCCESS;
+  const ObColumnSchemaV2 *state_col =
+      table_schema.get_column_schema(ai_col.state_column_id_);
+  const ObDatabaseSchema *db_schema = NULL;
+  if (OB_ISNULL(state_col)) {
+    ret = OB_ERR_UNEXPECTED;
+    SQL_ENG_LOG(ERROR, "ai strict gate: state column missing", K(ret),
+                "ai_col", ai_col.column_name_, "state_col_id", ai_col.state_column_id_);
+  } else if (OB_FAIL(guard.get_database_schema(table_schema.get_database_id(),
+                                               db_schema))) {
+    SQL_ENG_LOG(ERROR, "ai strict gate: get db schema failed", K(ret),
+                "db_id", table_schema.get_database_id());
+  } else if (OB_ISNULL(db_schema)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    ObSqlString sql;
+    SMART_VAR(ObMySQLProxy::MySQLResult, res) {
+      ObMySQLResult *result = NULL;
+      if (OB_FAIL(sql.assign_fmt("SELECT 1 FROM `%.*s`.`%.*s` WHERE `%.*s` <> 'READY' LIMIT 1",
+                                 db_schema->get_database_name_str().length(),
+                                 db_schema->get_database_name_str().ptr(),
+                                 table_schema.get_table_name_str().length(),
+                                 table_schema.get_table_name_str().ptr(),
+                                 state_col->get_column_name_str().length(),
+                                 state_col->get_column_name_str().ptr()))) {
+        SQL_ENG_LOG(ERROR, "build strict check sql failed", K(ret));
+      } else if (OB_FAIL(GCTX.sql_proxy_->read(res, sql.ptr()))) {
+        SQL_ENG_LOG(ERROR, "strict check read failed", K(ret), "sql", sql.ptr());
+      } else if (OB_ISNULL(result = res.get_result())) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_SUCCESS == result->next()) {
+        // A not-ready row exists: fail the whole statement (column-wide).
+        SQL_ENG_LOG(ERROR, "ai strict gate: not-ready row found", K(table_id),
+                    "ai_col", ai_col.column_name_, "sql", sql.ptr());
+        ret = OB_ERR_AI_COLUMN_STRICT_READ_NOT_READY;
+        LOG_USER_ERROR(OB_ERR_AI_COLUMN_STRICT_READ_NOT_READY,
+                       static_cast<uint64_t>(table_schema.get_table_id()),
+                       static_cast<uint64_t>(ai_col.column_id_));
+      } else if (OB_ITER_END != ret) {
+        SQL_ENG_LOG(ERROR, "ai strict gate: probe next failed", K(ret), "sql", sql.ptr());
+      } else {
+        SQL_ENG_LOG(ERROR, "ai strict gate: no not-ready row", K(table_id),
+                    "ai_col", ai_col.column_name_, "sql", sql.ptr());
+        ret = OB_SUCCESS;
+      }
+    }
+  }
+  return ret;
+}
+
+// Walks one DML statement (and its child statements) and applies the
+// column-level strict read gate to every AI column the statement references.
+int ai_check_strict_read_in_stmt(ObDMLStmt *stmt,
+                                 ObSchemaGetterGuard &guard,
+                                 const int64_t depth)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(stmt) || depth > 3) {
+    // nothing to check
+  } else {
+    ObArray<ObColumnRefRawExpr *> col_exprs;
+    if (OB_FAIL(stmt->get_column_exprs(col_exprs))) {
+      SQL_ENG_LOG(ERROR, "ai strict gate: collect column exprs failed", K(ret));
+    } else {
+      SQL_ENG_LOG(ERROR, "ai strict gate: stmt scan", "depth", depth,
+                  "col_expr_cnt", col_exprs.count(),
+                  "table_item_cnt", stmt->get_table_items().count());
+      ObArray<uint64_t> checked;  // table ids already probed
+      for (int64_t i = 0; OB_SUCC(ret) && i < stmt->get_table_items().count(); ++i) {
+        TableItem *item = stmt->get_table_items().at(i);
+        const ObTableSchema *table_schema = NULL;
+        if (OB_ISNULL(item)
+            || OB_INVALID_ID == item->ref_id_
+            || item->is_generated_table()
+            || item->is_temp_table()) {
+          // no base table behind this table item
+        } else if (OB_FAIL(guard.get_table_schema(item->ref_id_, table_schema))) {
+          SQL_ENG_LOG(ERROR, "ai strict gate: get table schema failed", K(ret),
+                      "ref_id", item->ref_id_);
+        } else if (OB_ISNULL(table_schema)
+                   || table_schema->get_ai_column_count() <= 0) {
+          // table without AI columns: unaffected
+        } else {
+          const ObIArray<ObAiColumnSchema> &ai_columns = table_schema->get_ai_columns();
+          const uint64_t real_tid = table_schema->get_table_id();
+          bool already = false;
+          for (int64_t c = 0; !already && c < checked.count(); ++c) {
+            already = (checked.at(c) == real_tid);
+          }
+          if (!already && OB_FAIL(checked.push_back(real_tid))) {
+            SQL_ENG_LOG(ERROR, "record checked table failed", K(ret));
+          }
+          for (int64_t a = 0; OB_SUCC(ret) && !already && a < ai_columns.count(); ++a) {
+            const ObAiColumnSchema &ai_col = ai_columns.at(a);
+            const bool referenced = ai_col_is_referenced(col_exprs, ai_col.column_id_,
+                                                         ai_col.column_name_);
+            SQL_ENG_LOG(ERROR, "ai strict gate: ai column candidate", K(real_tid),
+                        "table_name", table_schema->get_table_name_str(),
+                        "ai_col", ai_col.column_name_, K(referenced));
+            if (referenced && OB_FAIL(ai_probe_column_not_ready(
+                           guard, *table_schema, ai_col, real_tid))) {
+              SQL_ENG_LOG(ERROR, "ai strict gate: probe blocked statement", K(ret),
+                          K(real_tid), "ai_col", ai_col.column_name_);
+            }
+          }
+        }
+      }
+      // A derived table hides its base tables behind a child statement: check
+      // those too so `select * from (select ai_col from t) x` is gated as well.
+      if (OB_SUCC(ret)) {
+        ObSEArray<ObSelectStmt *, 4> child_stmts;
+        if (OB_FAIL(stmt->get_child_stmts(child_stmts))) {
+          SQL_ENG_LOG(ERROR, "ai strict gate: get child stmts failed", K(ret));
+        } else {
+          for (int64_t i = 0; OB_SUCC(ret) && i < child_stmts.count(); ++i) {
+            if (OB_FAIL(ai_check_strict_read_in_stmt(child_stmts.at(i), guard,
+                                                     depth + 1))) {
+              SQL_ENG_LOG(ERROR, "ai strict gate: child stmt blocked", K(ret));
+            }
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+}  // namespace
+
 int ObAiColumnDMLUtils::check_strict_read_for_stmt(
     ObStmt &basic_stmt,
     sql::ObSQLSessionInfo *session,
@@ -539,114 +699,13 @@ int ObAiColumnDMLUtils::check_strict_read_for_stmt(
       // strict read off: no check
     } else if (!basic_stmt.is_dml_stmt()) {
       // only SELECT/UPDATE/DELETE (+their EXPLAIN) go through the check
+    } else if (OB_ISNULL(schema_guard)) {
+      ret = OB_ERR_UNEXPECTED;
+      SQL_ENG_LOG(ERROR, "ai strict gate: no schema guard", K(ret));
     } else {
       ObDMLStmt *dml_stmt = static_cast<ObDMLStmt *>(&basic_stmt);
-      ObSchemaGetterGuard *guard = schema_guard;
-      // Collect distinct table ids referenced by the statement's column
-      // expressions.
-      ObArray<ObColumnRefRawExpr *> col_exprs;
-      if (OB_ISNULL(guard)) {
-        ret = OB_ERR_UNEXPECTED;
-        SQL_ENG_LOG(WARN, "no schema guard for strict read", K(ret));
-      } else if (OB_FAIL(dml_stmt->get_column_exprs(col_exprs))) {
-        SQL_ENG_LOG(WARN, "collect column exprs failed", K(ret));
-      } else {
-        ObArray<uint64_t> checked;  // checked table ids
-        for (int64_t i = 0; OB_SUCC(ret) && i < col_exprs.count(); ++i) {
-          ObColumnRefRawExpr *col_expr = col_exprs.at(i);
-          uint64_t tid = col_expr->get_table_id();
-          SQL_ENG_LOG(ERROR, "ai strict gate: col expr", K(tid),
-                      "col_id", col_expr->get_column_id(),
-                      "col_name", col_expr->get_column_name());
-          const ObTableSchema *table_schema = NULL;
-          const ObAiColumnSchema *ai_col = NULL;
-          bool already = false;
-          for (int64_t j = 0; !already && j < checked.count(); ++j) {
-            already = (checked.at(j) == tid);
-          }
-          if (already || OB_INVALID_ID == tid) {
-            continue;
-          }
-          // look up the table schema and AI columns
-          if (OB_FAIL(ret)) {
-          } else if (OB_FAIL(guard->get_table_schema(tid, table_schema))) {
-            SQL_ENG_LOG(WARN, "get table schema failed", K(ret), K(tid));
-          } else if (OB_ISNULL(table_schema)) {
-            // not a real table
-          } else if (table_schema->get_ai_column_count() <= 0) {
-            // no AI columns
-          } else {
-            // find the AI column matching this column expr id
-            for (int64_t a = 0; OB_SUCC(ret) && a < table_schema->get_ai_columns().count(); ++a) {
-              const ObAiColumnSchema &cand = table_schema->get_ai_columns().at(a);
-              if (cand.column_id_ == col_expr->get_column_id()) {
-                ai_col = &cand;
-                break;
-              }
-            }
-            SQL_ENG_LOG(ERROR, "ai strict gate: col match", K(tid),
-                        "col_id", col_expr->get_column_id(),
-                        "is_ai", OB_NOT_NULL(ai_col),
-                        "ai_col_id", OB_ISNULL(ai_col) ? OB_INVALID_ID : ai_col->column_id_,
-                        "ai_col_cnt", table_schema->get_ai_columns().count());
-            if (OB_ISNULL(ai_col)) {
-              // column is not an AI column: unaffected
-              if (OB_FAIL(checked.push_back(tid))) {
-              }
-            } else {
-              // column-level check: any row of this AI column not READY?
-              const ObColumnSchemaV2 *state_col =
-                  table_schema->get_column_schema(ai_col->state_column_id_);
-              const ObDatabaseSchema *db_schema = NULL;
-              if (OB_ISNULL(state_col)) {
-                ret = OB_ERR_UNEXPECTED;
-              } else if (OB_FAIL(guard->get_database_schema(
-                             table_schema->get_database_id(), db_schema))) {
-                SQL_ENG_LOG(WARN, "get db schema failed", K(ret));
-              } else if (OB_ISNULL(db_schema)) {
-                ret = OB_ERR_UNEXPECTED;
-              } else {
-                ObSqlString sql;
-                SMART_VAR(ObMySQLProxy::MySQLResult, res) {
-                  ObMySQLResult *result = NULL;
-                  if (OB_FAIL(sql.assign_fmt("SELECT 1 FROM `%.*s`.`%.*s` WHERE %.*s <> 'READY' LIMIT 1",
-                                             db_schema->get_database_name_str().length(),
-                                             db_schema->get_database_name_str().ptr(),
-                                             table_schema->get_table_name_str().length(),
-                                             table_schema->get_table_name_str().ptr(),
-                                             state_col->get_column_name_str().length(),
-                                             state_col->get_column_name_str().ptr()))) {
-                    SQL_ENG_LOG(WARN, "build strict check sql failed", K(ret));
-                  } else if (OB_FAIL(GCTX.sql_proxy_->read(res, sql.ptr()))) {
-                    SQL_ENG_LOG(WARN, "strict check read failed", K(ret), "sql", sql.ptr());
-                  } else if (OB_ISNULL(result = res.get_result())) {
-                    ret = OB_ERR_UNEXPECTED;
-                  } else if (OB_SUCCESS == result->next()) {
-                    // Not-ready row exists: error the statement (column-wide).
-                    SQL_ENG_LOG(ERROR, "ai strict gate: not-ready row found",
-                                K(tid), "ai_col_id", ai_col->column_id_,
-                                "sql", sql.ptr());
-                    ret = OB_ERR_AI_COLUMN_STRICT_READ_NOT_READY;
-                    LOG_USER_ERROR(OB_ERR_AI_COLUMN_STRICT_READ_NOT_READY,
-                                   static_cast<uint64_t>(table_schema->get_table_id()),
-                                   static_cast<uint64_t>(ai_col->column_id_));
-                  } else if (OB_ITER_END != ret) {
-                    SQL_ENG_LOG(ERROR, "ai strict gate: probe next failed", K(ret),
-                                "sql", sql.ptr());
-                  } else {
-                    SQL_ENG_LOG(ERROR, "ai strict gate: no not-ready row",
-                                K(tid), "ai_col_id", ai_col->column_id_,
-                                "sql", sql.ptr());
-                    ret = OB_SUCCESS;
-                  }
-                }
-              }
-              if (OB_SUCC(ret) && OB_FAIL(checked.push_back(tid))) {
-              }
-              break;  // one AI column per table enough for the expr set
-            }
-          }
-        }
+      if (OB_FAIL(ai_check_strict_read_in_stmt(dml_stmt, *schema_guard, 0))) {
+        SQL_ENG_LOG(ERROR, "ai strict gate: blocked statement", K(ret));
       }
     }
   }
@@ -722,8 +781,13 @@ int ObAiColumnDMLUtils::retry_ai_column(
         }
       }
       if (OB_SUCC(ret)) {
-        // Build the rowkey select list: backticked rowkey column names.
+        // Build the rowkey select list. ROUND 15 FIX (C): each rowkey column
+        // is wrapped in concat() so the result is a string regardless of the
+        // column type (a direct bigint projection cannot be read with
+        // get_varchar and failed with -4001), and the column names are kept to
+        // rebuild the "`col` = '<value>'" predicate the task service expects.
         ObStringBuffer rk_list(&exec_ctx.get_allocator());
+        ObArray<ObString> rk_names;
         ObArray<share::schema::ObColDesc> rk_ids;
         if (OB_FAIL(table_schema.get_rowkey_column_ids(rk_ids))) {
           SQL_ENG_LOG(ERROR, "get rowkey column ids failed", K(ret));
@@ -735,20 +799,32 @@ int ObAiColumnDMLUtils::retry_ai_column(
               ret = OB_ERR_UNEXPECTED;
               break;
             }
-            if (k > 0 && OB_FAIL(rk_list.append(","))) { break; }
             ObString rk_name = rk->get_column_name_str();
-            if (OB_FAIL(rk_list.append("`"))) { break; }
+            char alias[24];
+            int64_t alias_pos = 0;
+            if (k > 0 && OB_FAIL(rk_list.append(","))) { break; }
+            if (OB_FAIL(databuff_printf(alias, sizeof(alias), alias_pos, "rk%ld",
+                                        static_cast<long>(k)))) { break; }
+            if (OB_FAIL(rk_list.append("concat(`"))) { break; }
             else if (OB_FAIL(rk_list.append(rk_name))) { break; }
-            else if (OB_FAIL(rk_list.append("`"))) { break; }
+            else if (OB_FAIL(rk_list.append("`) AS "))) { break; }
+            else if (OB_FAIL(rk_list.append(alias))) { break; }
+            else if (OB_FAIL(ob_write_string(exec_ctx.get_allocator(), rk_name,
+                                             rk_name))) { break; }
+            else if (OB_FAIL(rk_names.push_back(rk_name))) { break; }
           }
         }
         if (OB_SUCC(ret)) {
           ObString db_name;
-          ObSchemaGetterGuard *guard_ptr = exec_ctx.get_sql_ctx()->schema_guard_;
+          // ROUND 15 FIX (C): sql_ctx.schema_guard_ is NULL for DDL command
+          // statements (only DML/PL populate it), so this lookup dereferenced
+          // NULL and failed with a bogus -4014. Use a fresh runtime guard.
+          ObSchemaGetterGuard local_guard;
           const ObDatabaseSchema *db_schema = NULL;
-          if (OB_ISNULL(guard_ptr)) {
-            ret = OB_ERR_UNEXPECTED;
-          } else if (OB_FAIL(guard_ptr->get_database_schema(table_schema.get_database_id(), db_schema))) {
+          if (OB_FAIL(GCTX.schema_service_->get_runtime_schema_guard(local_guard))) {
+            SQL_ENG_LOG(ERROR, "ai retry: get runtime schema guard failed", K(ret));
+          } else if (OB_FAIL(local_guard.get_database_schema(table_schema.get_database_id(),
+                                                             db_schema))) {
             SQL_ENG_LOG(ERROR, "get db schema failed", K(ret));
           } else if (OB_ISNULL(db_schema)) {
             ret = OB_ERR_UNEXPECTED;
@@ -757,15 +833,23 @@ int ObAiColumnDMLUtils::retry_ai_column(
             ObSqlString sel_sql;
             SMART_VAR(ObMySQLProxy::MySQLResult, sel_res) {
               ObMySQLResult *sel_result = NULL;
-              if (OB_FAIL(sel_sql.assign_fmt("SELECT %.*s AS rk FROM `%.*s`.`%.*s`%.*s",
+              // ROUND 15 FIX (C): the previous single assign_fmt passed one
+              // argument pair to a four conversion format, so an empty WHERE
+              // rendered as a literal "(null)" and the statement was a syntax
+              // error. Build the statement in two steps instead.
+              if (OB_FAIL(sel_sql.assign_fmt("SELECT %.*s FROM `%.*s`.`%.*s`",
                                              rk_list.length(), rk_list.ptr(),
                                              db_name.length(), db_name.ptr(),
                                              table_schema.get_table_name_str().length(),
-                                             table_schema.get_table_name_str().ptr(),
-                                             where_buf.length() > 0 ? " WHERE " : "",
-                                             where_buf.length(),
-                                             where_buf.length() ? where_buf.ptr() : ""))) {
+                                             table_schema.get_table_name_str().ptr()))) {
                 SQL_ENG_LOG(ERROR, "build retry select failed", K(ret));
+              } else if (where_buf.length() > 0
+                         && OB_FAIL(sel_sql.append(" WHERE "))) {
+                SQL_ENG_LOG(ERROR, "append retry where prefix failed", K(ret));
+              } else if (where_buf.length() > 0
+                         && OB_FAIL(sel_sql.append(where_buf.ptr(),
+                                                   where_buf.length()))) {
+                SQL_ENG_LOG(ERROR, "append retry where failed", K(ret));
               } else if (OB_FAIL(GCTX.sql_proxy_->read(sel_res, sel_sql.ptr()))) {
                 SQL_ENG_LOG(ERROR, "retry select failed", K(ret), "sql", sel_sql.ptr());
               } else if (OB_ISNULL(sel_result = sel_res.get_result())) {
@@ -773,12 +857,56 @@ int ObAiColumnDMLUtils::retry_ai_column(
               } else {
                 ObArray<ObString> rowkeys;
                 while (OB_SUCC(ret) && OB_SUCC(sel_result->next())) {
-                  ObString rk;
-                  if (OB_FAIL(sel_result->get_varchar("rk", rk))) {
-                    SQL_ENG_LOG(ERROR, "read rowkey failed", K(ret));
-                  } else {
+                  ObStringBuffer pred_buf(&exec_ctx.get_allocator());
+                  bool row_ok = true;
+                  for (int64_t k = 0; row_ok && OB_SUCC(ret) && k < rk_names.count(); ++k) {
+                    char alias[24];
+                    int64_t alias_pos = 0;
+                    ObString val;
+                    if (OB_FAIL(databuff_printf(alias, sizeof(alias), alias_pos,
+                                                "rk%ld", static_cast<long>(k)))) {
+                      SQL_ENG_LOG(ERROR, "build rowkey alias failed", K(ret));
+                    } else if (OB_FAIL(sel_result->get_varchar(alias, val))) {
+                      SQL_ENG_LOG(ERROR, "read rowkey failed", K(ret), "alias", alias);
+                    } else if (k > 0 && OB_FAIL(pred_buf.append(" AND "))) {
+                      row_ok = false;
+                    } else if (OB_FAIL(pred_buf.append("`"))) {
+                      row_ok = false;
+                    } else if (OB_FAIL(pred_buf.append(rk_names.at(k)))) {
+                      row_ok = false;
+                    } else if (OB_FAIL(pred_buf.append("` = "))) {
+                      row_ok = false;
+                    } else {
+                      // Render the value the way the DML path renders rowkeys:
+                      // numeric values stay literal (`id` = 3), everything else
+                      // is single quoted with quotes doubled.
+                      bool plain_number = (val.length() > 0);
+                      for (int64_t c = 0; plain_number && c < val.length(); ++c) {
+                        const char ch = val.ptr()[c];
+                        plain_number = (isdigit(static_cast<unsigned char>(ch))
+                                        || '-' == ch || '+' == ch || '.' == ch);
+                      }
+                      if (plain_number) {
+                        row_ok = (OB_SUCCESS == pred_buf.append(val.ptr(), val.length()));
+                      } else if (OB_FAIL(pred_buf.append("'"))) {
+                        row_ok = false;
+                      } else {
+                        for (int64_t c = 0; row_ok && c < val.length(); ++c) {
+                          const char ch = val.ptr()[c];
+                          if ('\'' == ch) {
+                            row_ok = (OB_SUCCESS == pred_buf.append("''"));
+                          } else {
+                            row_ok = (OB_SUCCESS == pred_buf.append(&ch, 1));
+                          }
+                        }
+                        row_ok = row_ok && (OB_SUCCESS == pred_buf.append("'"));
+                      }
+                    }
+                  }
+                  if (OB_SUCC(ret) && row_ok) {
+                    ObString pred(static_cast<int32_t>(pred_buf.length()), pred_buf.ptr());
                     ObString copy;
-                    if (OB_FAIL(ob_write_string(exec_ctx.get_allocator(), rk, copy))) {
+                    if (OB_FAIL(ob_write_string(exec_ctx.get_allocator(), pred, copy))) {
                       SQL_ENG_LOG(ERROR, "copy rowkey failed", K(ret));
                     } else if (OB_FAIL(rowkeys.push_back(copy))) {
                       SQL_ENG_LOG(ERROR, "push rowkey failed", K(ret));

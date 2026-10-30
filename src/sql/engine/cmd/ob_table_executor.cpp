@@ -20,6 +20,7 @@
 #include "common/ob_timeout_ctx.h"
 #include "lib/stat/ob_diagnostic_info_guard.h"
 #include "share/ob_server_struct.h"
+#include "share/schema/ob_multi_version_schema_service.h"
 #include "sql/engine/cmd/ob_table_executor.h"
 #include "query/command/ob_root_command_service.h"
 #include "query/command/ob_root_service_serialization.h"
@@ -767,25 +768,56 @@ int ObAlterTableExecutor::execute(ObExecContext &ctx, ObAlterTableStmt &stmt)
   } else if (stmt.has_ai_retry()) {
     SQL_ENG_LOG(ERROR, "ai retry gate: executor entry", "arg_cnt",
                 stmt.get_ai_retry_args().count(),
-                "table_id", stmt.get_alter_table_arg().alter_table_schema_.get_table_id());
+                "alter_schema_tid", stmt.get_alter_table_arg().alter_table_schema_.get_table_id(),
+                "arg_tid", stmt.get_ai_retry_args().empty()
+                    ? OB_INVALID_ID : stmt.get_ai_retry_args().at(0).table_id_);
     // RETRY AI COLUMN: synchronous in-session execution. Select matched
     // rowkeys (status pseudo column maps to the hidden state column),
     // invalidate them and enqueue fresh tasks. Not a schema change.
-    ObSchemaGetterGuard &guard = *ctx.get_sql_ctx()->schema_guard_;
+    // ROUND 15 FIX (C): sql_ctx.schema_guard_ is only populated for DML/PL
+    // statements, so evaluating it from a DDL executor dereferences NULL and
+    // every lookup below fails with a bogus code. Take a fresh runtime guard
+    // from the schema service instead.
+    share::schema::ObSchemaGetterGuard guard;
     const ObTableSchema *table_schema = NULL;
-    uint64_t ai_retry_tid = stmt.get_alter_table_arg().alter_table_schema_.get_table_id();
-    int guard_ret = guard.get_table_schema(ai_retry_tid, table_schema);
+    // ROUND 15 FIX (C): alter_table_schema_ is the scratch schema of this DDL
+    // action; for a non-schema-changing RETRY it can hold a synthesized table
+    // id (real id + 1024) that no schema lookup resolves. Use the id captured
+    // at resolve time first, then the stmt table id, then a name based lookup,
+    // and never leak a raw -4014 to the client.
+    ObString ai_retry_db;
+    ObString ai_retry_tbl;
+    uint64_t ai_retry_tid = stmt.get_ai_retry_args().empty()
+        ? OB_INVALID_ID : stmt.get_ai_retry_args().at(0).table_id_;
+    if (OB_INVALID_ID == ai_retry_tid) {
+      ai_retry_tid = stmt.get_alter_table_arg().alter_table_schema_.get_table_id();
+    }
+    int guard_ret = GCTX.schema_service_->get_runtime_schema_guard(guard);
+    if (OB_SUCCESS == guard_ret) {
+      guard_ret = OB_INVALID_ID == ai_retry_tid
+          ? OB_TABLE_NOT_EXIST : guard.get_table_schema(ai_retry_tid, table_schema);
+    }
     SQL_ENG_LOG(ERROR, "ai retry gate: guard lookup", K(guard_ret), K(ai_retry_tid),
                 "is_null", OB_ISNULL(table_schema),
                 "guard_type", guard.get_schema_guard_type());
-    if (OB_SUCCESS != guard_ret) {
-      ret = guard_ret;
-      SQL_ENG_LOG(ERROR, "ai retry gate: get table schema for ai retry failed", K(ret),
-                  K(ai_retry_tid));
-    } else if (OB_ISNULL(table_schema)) {
-      SQL_ENG_LOG(ERROR, "ai retry gate: table schema NULL after guard lookup",
-                  K(ai_retry_tid));
-      ret = OB_ERR_UNEXPECTED;
+    if (OB_SUCCESS != guard_ret || OB_ISNULL(table_schema)) {
+      ai_retry_db = stmt.get_alter_table_arg().alter_table_schema_.get_origin_database_name();
+      ai_retry_tbl = stmt.get_alter_table_arg().alter_table_schema_.get_origin_table_name();
+      table_schema = NULL;
+      const int name_ret = guard.get_table_schema(ai_retry_db, ai_retry_tbl,
+                                                  false, table_schema);
+      SQL_ENG_LOG(ERROR, "ai retry gate: name lookup", K(name_ret), K(ai_retry_db),
+                  K(ai_retry_tbl), "is_null", OB_ISNULL(table_schema));
+      if (OB_SUCCESS == name_ret && OB_NOT_NULL(table_schema)) {
+        guard_ret = OB_SUCCESS;
+      }
+    }
+    if (OB_SUCCESS != guard_ret || OB_ISNULL(table_schema)) {
+      ret = OB_TABLE_NOT_EXIST;
+      LOG_USER_ERROR(OB_TABLE_NOT_EXIST, ai_retry_db.length(), ai_retry_db.ptr(),
+                     ai_retry_tbl.length(), ai_retry_tbl.ptr());
+      SQL_ENG_LOG(ERROR, "ai retry gate: RETRY AI COLUMN target table not found",
+                  K(ret), K(ai_retry_tid), K(ai_retry_db), K(ai_retry_tbl));
     } else if (stmt.get_ai_retry_args().count() != 1) {
       // RETRY targets exactly one AI column; grammar permits one per action,
       // multiple actions rejected here like MySQL multi-action conflicts.
