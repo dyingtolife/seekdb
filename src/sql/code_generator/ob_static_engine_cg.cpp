@@ -1700,6 +1700,38 @@ int ObStaticEngineCG::generate_spec(ObLogValuesTableAccess &op,
     if (OB_FAIL(spec.column_exprs_.prepare_allocate(op.get_column_exprs().count()))) {
     } else if (OB_FAIL(spec.value_exprs_.prepare_allocate(table_def->access_exprs_.count()))) {
     } else if (OB_FAIL(spec.obj_params_.prepare_allocate(table_def->access_objs_.count()))) {
+    } else if (ObValuesTableDef::ACCESS_FILE_CURSOR == table_def->access_type_) {
+      // copy the file-table streaming descriptor into the spec
+      const ObFileCursorDef *fd = table_def->file_def_;
+      if (OB_ISNULL(fd)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(ob_write_string(allocator, fd->path_, spec.file_path_)) ||
+                 OB_FAIL(ob_write_string(allocator, fd->delimiter_, spec.file_delimiter_)) ||
+                 OB_FAIL(ob_write_string(allocator, fd->quote_, spec.file_quote_)) ||
+                 OB_FAIL(ob_write_string(allocator, fd->escape_, spec.file_escape_)) ||
+                 OB_FAIL(ob_write_string(allocator, fd->nullstr_, spec.file_nullstr_)) ||
+                 OB_FAIL(ob_write_string(allocator, fd->format_name_, spec.file_format_name_))) {
+      } else {
+        spec.file_format_ = fd->format_;
+        spec.file_has_header_ = fd->has_header_;
+        spec.file_sample_size_ = fd->sample_size_;
+        spec.file_sig_size_ = fd->file_size_;
+        spec.file_sig_mtime_sec_ = fd->mtime_sec_;
+        spec.file_sig_mtime_nsec_ = fd->mtime_nsec_;
+        if (OB_FAIL(spec.file_col_names_.prepare_allocate(fd->columns_.count())) ||
+            OB_FAIL(spec.file_col_types_.prepare_allocate(fd->columns_.count())) ||
+            OB_FAIL(spec.file_col_nullables_.prepare_allocate(fd->columns_.count()))) {
+        } else {
+          for (int64_t c = 0; OB_SUCC(ret) && c < fd->columns_.count(); ++c) {
+            if (OB_FAIL(ob_write_string(allocator, fd->columns_.at(c).name_,
+                                        spec.file_col_names_.at(c)))) {
+            } else {
+              spec.file_col_types_.at(c) = fd->columns_.at(c).type_;
+              spec.file_col_nullables_.at(c) = fd->columns_.at(c).nullable_;
+            }
+          }
+        }
+      }
     } else {
       for (int64_t i = 0; OB_SUCC(ret) && i < op.get_column_exprs().count(); i++) {
         ObColumnRefRawExpr *col_expr = op.get_column_exprs().at(i);

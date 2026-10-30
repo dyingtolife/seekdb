@@ -12875,81 +12875,6 @@ int ObDMLResolver::read_local_file(const ObString &path, ObIAllocator &allocator
   return ret;
 }
 
-static void glob_split_pattern(const ObString &pattern, ObString &dir, ObString &pat)
-{
-  int64_t last_sep = -1;
-  for (int64_t i = pattern.length() - 1; i >= 0; --i) {
-    if (pattern.ptr()[i] == '/') { last_sep = i; break; }
-  }
-  if (last_sep < 0) {
-    dir.assign_ptr(const_cast<char *>("."), 1);
-    pat = pattern;
-  } else {
-    dir = ObString(static_cast<int32_t>(last_sep), pattern.ptr());
-    pat = ObString(static_cast<int32_t>(pattern.length() - last_sep - 1), pattern.ptr() + last_sep + 1);
-  }
-}
-
-static bool glob_match_impl(const char *pat, int64_t plen, const char *str, int64_t slen)
-{
-  int64_t p = 0, s = 0, star_p = -1, star_s = -1;
-  while (s < slen) {
-    if (p < plen && (pat[p] == '?' || tolower(static_cast<unsigned char>(pat[p])) == tolower(static_cast<unsigned char>(str[s])))) { ++p; ++s; }
-    else if (p < plen && pat[p] == '*') { star_p = p++; star_s = s; }
-    else if (star_p != -1) { p = star_p + 1; s = ++star_s; }
-    else { return false; }
-  }
-  while (p < plen && pat[p] == '*') { ++p; }
-  return p == plen;
-}
-
-static int collect_glob_matches_impl(const ObString &pattern, ObIAllocator &allocator, ObArray<ObFileRow> &rows)
-{
-  int ret = OB_SUCCESS;
-  ObString dir, pat;
-  glob_split_pattern(pattern, dir, pat);
-  char dir_buf[OB_MAX_FILE_NAME_LENGTH];
-  if (dir.length() >= static_cast<int32_t>(sizeof(dir_buf))) {
-    ret = OB_INVALID_ARGUMENT;
-  } else {
-    MEMCPY(dir_buf, dir.ptr(), dir.length());
-    dir_buf[dir.length()] = '\0';
-    DIR *dp = opendir(dir_buf);
-    if (OB_ISNULL(dp)) {
-      ret = OB_INVALID_ARGUMENT;
-    } else {
-      struct dirent *ent;
-      while (OB_SUCC(ret) && NULL != (ent = readdir(dp))) {
-        const char *name = ent->d_name;
-        if (name[0] == '.') { continue; }
-        if (!glob_match_impl(pat.ptr(), pat.length(), name, strlen(name))) { continue; }
-        ObSqlString full;
-        if (OB_FAIL(full.append(dir)) || OB_FAIL(full.append("/")) || OB_FAIL(full.append(name))) {
-        } else {
-          char *pb = static_cast<char *>(allocator.alloc(full.length() + 1));
-          if (OB_ISNULL(pb)) {
-            ret = OB_ALLOCATE_MEMORY_FAILED;
-          } else {
-            MEMCPY(pb, full.ptr(), full.length());
-            pb[full.length()] = '\0';
-            ObFileRow row;
-            ObString cell(static_cast<int32_t>(full.length()), pb);
-            if (OB_FAIL(row.cells_.push_back(cell))) {
-            } else if (OB_FAIL(rows.push_back(row))) {
-            }
-          }
-        }
-      }
-      closedir(dp);
-    }
-  }
-  return ret;
-}
-
-
-
-
-
 int ObDMLResolver::parse_int64_strict(const ObString &s, int64_t &v)
 {
   int ret = OB_SUCCESS;
@@ -12972,10 +12897,217 @@ int ObDMLResolver::parse_int64_strict(const ObString &s, int64_t &v)
   return ret;
 }
 
+// Parse one named parameter node produced by the grammar:
+//   T_EXPR_LIST(NAME_OB, literal?) -- literal omitted for bare flags
+int ObDMLResolver::parse_file_table_param(const ParseNode &param_node,
+                                          ObString &name,
+                                          ParseNode *&value_node)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(T_EXPR_LIST != param_node.type_ || param_node.num_child_ < 1 ||
+                  OB_ISNULL(param_node.children_) || OB_ISNULL(param_node.children_[0]))) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    ParseNode *name_nd = param_node.children_[0];
+    name.assign_ptr(name_nd->str_value_, static_cast<int32_t>(name_nd->str_len_));
+    value_node = (param_node.num_child_ >= 2) ? param_node.children_[1] : NULL;
+  }
+  return ret;
+}
 
-static int collect_glob_matches_impl(const ObString &pattern, ObIAllocator &allocator, ObArray<ObFileRow> &rows);
-static int parquet_plain_to_text_rows_impl(const ObMiniParquetReader::ReadResult &rr,
-                                           ObIAllocator &allocator, ObArray<ObFileRow> &rows);
+int ObDMLResolver::resolve_file_param_literal(ParseNode *node, bool want_bool,
+                                              bool &bval, ObString &sval, int64_t &ival)
+{
+  int ret = OB_SUCCESS;
+  bval = false;
+  ival = 0;
+  if (OB_ISNULL(node)) {
+    if (want_bool) { bval = true; }  // bare flag, e.g. `header`
+    else { ret = OB_ERR_PARSE_SQL; }
+  } else if (T_BOOL == node->type_) {
+    bval = (0 != node->value_);
+    if (!want_bool) { ret = OB_ERR_PARSE_SQL; }
+  } else if (T_INT == node->type_) {
+    ival = static_cast<int64_t>(node->value_);
+    bval = (0 != ival);
+    if (want_bool) { ret = OB_ERR_PARSE_SQL; }
+  } else if (T_VARCHAR == node->type_ || T_CHAR == node->type_) {
+    sval.assign_ptr(node->str_value_, static_cast<int32_t>(node->str_len_));
+    if (want_bool) {
+      if (sval.case_compare("true") == 0) { bval = true; }
+      else if (sval.case_compare("false") == 0) { bval = false; }
+      else { ret = OB_ERR_PARSE_SQL; }
+    }
+  } else {
+    ret = OB_ERR_PARSE_SQL;
+  }
+  return ret;
+}
+
+// Canonicalize a local path (realpath of the deepest existing ancestor plus
+// the verbatim tail) so prefix checks cannot be fooled by ".." or symlinks.
+int ObDMLResolver::canonicalize_local_path(const ObString &path, ObString &canonical)
+{
+  int ret = OB_SUCCESS;
+  char path_buf[OB_MAX_FILE_NAME_LENGTH];
+  char real_buf[OB_MAX_FILE_NAME_LENGTH];
+  if (path.empty() || path.length() >= static_cast<int32_t>(sizeof(path_buf))) {
+    ret = OB_INVALID_ARGUMENT;
+  } else {
+    MEMCPY(path_buf, path.ptr(), path.length());
+    path_buf[path.length()] = '\0';
+    // reject any ".." component outright
+    const char *p = path_buf;
+    while (OB_SUCC(ret) && NULL != p) {
+      if (0 == strncmp(p, "..", 2) && (p == path_buf || p[-1] == '/') &&
+          (p[2] == '\0' || p[2] == '/')) {
+        ret = OB_INVALID_ARGUMENT;
+        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "path traversal is not allowed");
+      } else {
+        p = strchr(p + 1, '/');
+      }
+    }
+    if (OB_SUCC(ret)) {
+      char *rp = realpath(path_buf, real_buf);
+      if (NULL != rp) {
+        canonical.assign_ptr(real_buf, static_cast<int32_t>(strlen(real_buf)));
+      } else {
+        // the target itself may not exist yet (COPY destination): canonicalize
+        // the deepest existing ancestor and keep the tail verbatim
+        char tail_buf[OB_MAX_FILE_NAME_LENGTH];
+        strncpy(tail_buf, path_buf, sizeof(tail_buf) - 1);
+        tail_buf[sizeof(tail_buf) - 1] = '\0';
+        char *slash = strrchr(tail_buf, '/');
+        bool done = false;
+        if (NULL != slash) {
+          *slash = '\0';
+          const char *base = slash + 1;
+          if ('\0' != base[0] && 0 != strcmp(base, ".") && 0 != strcmp(base, "..")) {
+            char *rp2 = realpath(tail_buf, real_buf);
+            if (NULL != rp2) {
+              const int64_t dlen = strlen(real_buf);
+              if (dlen + 1 + strlen(base) >= static_cast<int64_t>(sizeof(real_buf))) {
+                ret = OB_INVALID_ARGUMENT;
+              } else {
+                real_buf[dlen] = '/';
+                MEMCPY(real_buf + dlen + 1, base, strlen(base));
+                real_buf[dlen + 1 + strlen(base)] = '\0';
+                canonical.assign_ptr(real_buf, static_cast<int32_t>(strlen(real_buf)));
+                done = true;
+              }
+            }
+          }
+        }
+        if (!done && OB_SUCC(ret)) {
+          ret = OB_INVALID_ARGUMENT;
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+// Streaming schema discovery + inference for one file table. The full input
+// may be scanned (per the competition spec), but rows stream through the
+// inferer and are never retained; the cursor is closed before returning.
+int ObDMLResolver::infer_file_schema_streaming(ObFileSourceFormat fmt,
+                                               const ObString &canonical_path,
+                                               const ObFileParamSpec &params,
+                                               common::ObIAllocator &allocator,
+                                               ObFileSchema &schema)
+{
+  int ret = OB_SUCCESS;
+  IFileRowCursor *cursor = NULL;
+  ObSEArray<bool, 8> needed;
+  if (OB_FAIL(make_file_row_cursor(fmt, canonical_path, params, needed, allocator, cursor))) {
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "cannot open file for schema scan");
+  } else if (OB_ISNULL(cursor)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(cursor->open())) {
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "cannot read file");
+  } else {
+    // column discovery
+    if (ObFileSourceFormat::CSV == fmt && params.has_header_) {
+      ObFileRow header_row;
+      int gr = cursor->next_row(header_row);
+      if (OB_ITER_END == gr) {
+        // empty file: no columns
+      } else if (OB_SUCCESS != gr) {
+        ret = OB_INVALID_DATA;
+        LOG_USER_ERROR(OB_INVALID_DATA, "bad csv header row, at line %ld", cursor->current_line());
+      } else {
+        for (int64_t i = 0; OB_SUCC(ret) && i < header_row.cells_.count(); ++i) {
+          ObString name = header_row.cells_.at(i);
+          ObSqlString tmp;
+          if (name.empty()) {
+            if (OB_FAIL(tmp.append_fmt("column_%ld", i + 1))) {
+            } else {
+              char *nb = static_cast<char *>(allocator.alloc(tmp.length()));
+              if (OB_ISNULL(nb)) {
+                ret = OB_ALLOCATE_MEMORY_FAILED;
+              } else {
+                MEMCPY(nb, tmp.ptr(), tmp.length());
+                name.assign_ptr(nb, static_cast<int32_t>(tmp.length()));
+              }
+            }
+          }
+          if (OB_SUCC(ret)) {
+            ObFileSchema::Column col;
+            col.name_ = name;
+            if (OB_FAIL(schema.columns_.push_back(col))) {}
+          }
+        }
+      }
+    } else if (ObFileSourceFormat::PARQUET == fmt) {
+      ObParquetFileCursor *pc = static_cast<ObParquetFileCursor *>(cursor);
+      for (int64_t i = 0; OB_SUCC(ret) && i < pc->column_names().count(); ++i) {
+        ObFileSchema::Column col;
+        col.name_ = pc->column_names().at(i);
+        if (OB_FAIL(schema.columns_.push_back(col))) {}
+      }
+    } else if (ObFileSourceFormat::GLOB == fmt) {
+      ObFileSchema::Column col;
+      char *nb = static_cast<char *>(allocator.alloc(5));
+      if (OB_ISNULL(nb)) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+      } else {
+        MEMCPY(nb, "file", 4); nb[4] = '\0';
+        col.name_.assign_ptr(nb, 4);
+        col.type_ = ObFileColumnType::VARCHAR;
+        col.nullable_ = false;
+        if (OB_FAIL(schema.columns_.push_back(col))) {}
+      }
+    }
+    // full-input inference scan (GLOB needs none: its schema is fixed)
+    if (OB_SUCC(ret) && ObFileSourceFormat::GLOB != fmt) {
+      ObFileSchemaInferer inferer;
+      inferer.init(schema.columns_.count());
+      ObFileRow row;
+      while (OB_SUCC(ret)) {
+        int gr = cursor->next_row(row);
+        if (OB_ITER_END == gr) { break; }
+        else if (OB_INVALID_DATA == gr) {
+          ret = OB_INVALID_DATA;
+          LOG_USER_ERROR(OB_INVALID_DATA, "bad row in file, at line %ld", cursor->current_line());
+        } else if (OB_SUCCESS != gr) {
+          ret = gr;
+        } else if (OB_FAIL(inferer.feed_row(row, params))) {
+        }
+      }
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(inferer.finalize(allocator, schema))) {
+        LOG_WARN("schema inference failed", K(ret));
+      }
+    }
+  }
+  if (NULL != cursor) {
+    cursor->close();
+    allocator.free(cursor);
+    cursor = NULL;
+  }
+  return ret;
+}
+
 int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableItem *&table_item)
 {
   int ret = OB_SUCCESS;
@@ -12985,7 +13117,6 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableIte
   ParseNode *path_node = NULL;
   ParseNode *param_node = NULL;
   ObString func_name;
-  ObString path_str;
   ObString alias_name;
 
   // children layout produced by the grammar:
@@ -13016,119 +13147,202 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableIte
   }
 
   // resolve path literal
+  ObString raw_path;
   if (OB_FAIL(ret)) {
-  } else if (OB_FAIL(resolve_str_const(*path_node, path_str))) {
+  } else if (OB_FAIL(resolve_str_const(*path_node, raw_path))) {
     LOG_WARN("failed to resolve file path literal", K(ret));
   }
 
-  // secure_file_priv check: resolved path (dirname) must live under secure_file_priv
+  // canonicalize (path escape prevention), then enforce secure_file_priv
+  ObString canonical_path;
+  ObString secure_dir;
   if (OB_FAIL(ret)) {
-    ObString secure_dir;
-    if (OB_FAIL(session_info_->get_secure_file_priv(secure_dir))) {
-      LOG_WARN("failed to read secure_file_priv", K(ret));
-    } else if (OB_FAIL(ObResolverUtils::check_secure_path(secure_dir, path_str))) {
-      LOG_USER_ERROR(OB_INVALID_ARGUMENT, "file path is outside secure_file_priv");
+  } else if (OB_FAIL(canonicalize_local_path(raw_path, canonical_path))) {
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "invalid file path");
+  } else if (OB_FAIL(session_info_->get_secure_file_priv(secure_dir))) {
+    LOG_WARN("failed to read secure_file_priv", K(ret));
+  } else if (OB_FAIL(ObResolverUtils::check_secure_path(secure_dir, canonical_path))) {
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "file path is outside secure_file_priv");
+  }
+
+  // named parameters
+  ObFileParamSpec params;
+  if (OB_FAIL(ret)) {
+  } else if (NULL != param_node) {
+    if (OB_UNLIKELY(T_EXPR_LIST != param_node->type_)) {
+      ret = OB_ERR_UNEXPECTED;
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && NULL != param_node && i < param_node->num_child_; ++i) {
+      ParseNode *pnd = param_node->children_[i];
+      ObString pname;
+      ParseNode *vnode = NULL;
+      bool bval = false;
+      int64_t ival = 0;
+      ObString sval;
+      if (OB_ISNULL(pnd)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(parse_file_table_param(*pnd, pname, vnode))) {
+      } else if (pname.case_compare("header") == 0) {
+        if (OB_FAIL(resolve_file_param_literal(vnode, true, bval, sval, ival))) {
+          LOG_USER_ERROR(OB_ERR_PARSE_SQL, "invalid value for header");
+        } else {
+          params.has_header_ = bval;
+          params.header_set_ = true;
+        }
+      } else if (pname.case_compare("sample_size") == 0) {
+        if (OB_FAIL(resolve_file_param_literal(vnode, false, bval, sval, ival))) {
+          LOG_USER_ERROR(OB_ERR_PARSE_SQL, "invalid value for sample_size");
+        } else if (ival != -1) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "sample_size, only -1 (full scan) is supported");
+        } else {
+          params.sample_size_ = ival;
+          params.sample_size_set_ = true;
+        }
+      } else if (pname.case_compare("delimiter") == 0
+                 || pname.case_compare("sep") == 0) {
+        if (OB_FAIL(resolve_file_param_literal(vnode, false, bval, sval, ival))) {
+          LOG_USER_ERROR(OB_ERR_PARSE_SQL, "invalid value for delimiter");
+        } else if (sval.length() != 1) {
+          ret = OB_ERR_PARSE_SQL;
+          LOG_USER_ERROR(OB_ERR_PARSE_SQL, "delimiter must be a single character");
+        } else {
+          params.delimiter_ = sval;
+        }
+      } else if (pname.case_compare("quote") == 0) {
+        if (OB_FAIL(resolve_file_param_literal(vnode, false, bval, sval, ival))) {
+          LOG_USER_ERROR(OB_ERR_PARSE_SQL, "invalid value for quote");
+        } else if (sval.length() > 1) {
+          ret = OB_ERR_PARSE_SQL;
+          LOG_USER_ERROR(OB_ERR_PARSE_SQL, "quote must be a single character");
+        } else {
+          params.quote_ = sval;
+        }
+      } else if (pname.case_compare("escape") == 0) {
+        if (OB_FAIL(resolve_file_param_literal(vnode, false, bval, sval, ival))) {
+          LOG_USER_ERROR(OB_ERR_PARSE_SQL, "invalid value for escape");
+        } else if (sval.length() > 1) {
+          ret = OB_ERR_PARSE_SQL;
+          LOG_USER_ERROR(OB_ERR_PARSE_SQL, "escape must be a single character");
+        } else {
+          params.escape_ = sval;
+        }
+      } else if (pname.case_compare("nullstr") == 0
+                 || pname.case_compare("null") == 0) {
+        if (OB_FAIL(resolve_file_param_literal(vnode, false, bval, sval, ival))) {
+          LOG_USER_ERROR(OB_ERR_PARSE_SQL, "invalid value for nullstr");
+        } else {
+          params.nullstr_ = sval;
+        }
+      } else if (pname.case_compare("format") == 0) {
+        if (OB_FAIL(resolve_file_param_literal(vnode, false, bval, sval, ival))) {
+          LOG_USER_ERROR(OB_ERR_PARSE_SQL, "invalid value for format");
+        } else {
+          params.format_ = sval;
+        }
+      } else {
+        ret = OB_ERR_PARSE_SQL;
+        LOG_USER_ERROR(OB_ERR_PARSE_SQL, "unknown file table parameter");
+      }
     }
   }
 
-  // read the whole file (small-file competition scope; streaming plan requires
-  // a physical operator which follows in a later iteration)
-  char *buf = NULL;
-  int64_t file_len = 0;
+  // format selection + validation
+  ObFileSourceFormat fmt = ObFileSourceFormat::INVALID;
   if (OB_FAIL(ret)) {
-  } else if (OB_FAIL(read_local_file(path_str, *allocator_, buf, file_len))) {
+  } else if (func_name.case_compare("read_csv") == 0) {
+    fmt = ObFileSourceFormat::CSV;
+    if (!params.format_.empty()
+        && params.format_.case_compare("csv") != 0
+        && params.format_.case_compare("auto") != 0) {
+      ret = OB_ERR_PARSE_SQL;
+      LOG_USER_ERROR(OB_ERR_PARSE_SQL, "unsupported format for read_csv");
+    }
+  } else if (func_name.case_compare("read_json") == 0
+             || func_name.case_compare("read_ndjson") == 0) {
+    fmt = ObFileSourceFormat::JSONL;
+    if (!params.format_.empty()
+        && params.format_.case_compare("newline_delimited") != 0
+        && params.format_.case_compare("ndjson") != 0) {
+      ret = OB_ERR_PARSE_SQL;
+      LOG_USER_ERROR(OB_ERR_PARSE_SQL, "only newline_delimited format is supported");
+    }
+  } else if (func_name.case_compare("read_parquet") == 0) {
+    fmt = ObFileSourceFormat::PARQUET;
+  } else if (func_name.case_compare("glob") == 0) {
+    fmt = ObFileSourceFormat::GLOB;
+  } else {
+    ret = OB_ERR_UNEXPECTED;
+  }
+
+  // stat the file for the change-detection signature
+  ObFileSignature sig;
+  if (OB_FAIL(ret)) {
+  } else if (ObFileSourceFormat::GLOB != fmt
+             && OB_FAIL(stat_file_signature(canonical_path, sig))) {
     LOG_USER_ERROR(OB_INVALID_ARGUMENT, "cannot read file");
   }
 
-  // collect header + rows and infer the schema
+  // streaming schema discovery + inference
   ObFileSchema schema;
-  ObArray<ObFileRow> rows;
   if (OB_FAIL(ret)) {
-  } else if (func_name.case_compare("glob") == 0) {
-    // glob: expand pattern to matching file list; one `file` VARCHAR column
-    ObFileSchema::Column col;
-    char *nb = static_cast<char *>(allocator_->alloc(5));
-    if (OB_ISNULL(nb)) {
-      ret = OB_ALLOCATE_MEMORY_FAILED;
-    } else {
-      MEMCPY(nb, "file", 4); nb[4] = '\0';
-      col.name_.assign_ptr(nb, 4);
-      col.type_ = ObFileColumnType::VARCHAR;
-      col.nullable_ = false;
-      if (OB_FAIL(schema.columns_.push_back(col))) {
-      } else if (OB_FAIL(collect_glob_matches_impl(path_str, *allocator_, rows))) {
-      }
-    }
+  } else if (OB_FAIL(infer_file_schema_streaming(fmt, canonical_path, params,
+                                                 *allocator_, schema))) {
+    // diagnostics already emitted
+  }
+
+  // build the cursor descriptor
+  ObFileCursorDef *file_def = NULL;
+  if (OB_FAIL(ret)) {
+  } else if (OB_ISNULL(file_def = static_cast<ObFileCursorDef *>(
+                 allocator_->alloc(sizeof(ObFileCursorDef))))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
   } else {
-    ObArray<ObString> header;
-    if (func_name.case_compare("read_csv") == 0) {
-      bool has_header = true;  // competition spec: header=true is the default; only -1 sample
-      ObCsvCursor cursor(buf, file_len, has_header);
-      header = cursor.header();
-      ObFileRow r;
-      while (OB_SUCC(ret)) {
-        int gr = cursor.next_row(r);
-        if (OB_ITER_END == gr) { break; }
-        else if (OB_SUCCESS != gr) { ret = gr; LOG_WARN("bad csv row"); }
-        else if (OB_FAIL(rows.push_back(r))) {}
-      }
-    } else if (func_name.case_compare("read_json") == 0
-               || func_name.case_compare("read_ndjson") == 0) {
-      ObJsonlCursor cursor(buf, file_len, *allocator_);
-      // first pass: collect the union of keys in order
-      ObArray<ObString> keys;
-      ObFileRow r;
-      while (OB_SUCC(ret)) {
-        int gr = cursor.next_row(r);
-        if (OB_ITER_END == gr) { break; }
-        else if (OB_SUCCESS != gr) { ret = gr; LOG_WARN("bad jsonl row"); }
-        else {
-          // r.cells_ holds [k1, v1, k2, v2, ...]
-          for (int64_t i = 0; OB_SUCC(ret) && i + 1 < r.cells_.count(); i += 2) {
-            bool found = false;
-            for (int64_t k = 0; !found && k < keys.count(); ++k) {
-              found = (keys.at(k) == r.cells_.at(i));
-            }
-            if (!found && OB_FAIL(keys.push_back(r.cells_.at(i)))) {}
-          }
-          if (OB_FAIL(rows.push_back(r))) {}
-        }
-      }
-      for (int64_t k = 0; OB_SUCC(ret) && k < keys.count(); ++k) {
-        header.push_back(keys.at(k));
-      }
-    } else if (func_name.case_compare("read_parquet") == 0) {
-      ObMiniParquetReader::ReadResult rr;
-      if (OB_FAIL(ObMiniParquetReader::read_file(buf, file_len, rr))) {
-        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "invalid parquet file");
-      } else {
-        for (int64_t c = 0; OB_SUCC(ret) && c < rr.column_names_.count(); ++c) {
-          char *nb = static_cast<char *>(allocator_->alloc(rr.column_names_.at(c).length() + 1));
-          if (OB_ISNULL(nb)) {
-            ret = OB_ALLOCATE_MEMORY_FAILED;
-          } else {
-            MEMCPY(nb, rr.column_names_.at(c).ptr(), rr.column_names_.at(c).length());
-            nb[rr.column_names_.at(c).length()] = '\0';
-            common::ObString n(static_cast<int32_t>(rr.column_names_.at(c).length()), nb);
-            if (OB_FAIL(header.push_back(n))) {}
-          }
-        }
-        // convert plain columns to text rows for the shared path below
-        if (OB_SUCC(ret)) {
-          ret = parquet_plain_to_text_rows_impl(rr, *allocator_, rows);
-        }
-      }
+    file_def = new (file_def) ObFileCursorDef();
+    file_def->format_ = static_cast<int8_t>(fmt);
+    file_def->has_header_ = params.has_header_;
+    file_def->sample_size_ = params.sample_size_;
+    file_def->file_size_ = sig.size_;
+    file_def->mtime_sec_ = sig.mtime_sec_;
+    file_def->mtime_nsec_ = sig.mtime_nsec_;
+    if (OB_FAIL(ob_write_string(*allocator_, canonical_path, file_def->path_, true)) ||
+        OB_FAIL(ob_write_string(*allocator_, params.delimiter_, file_def->delimiter_, true)) ||
+        OB_FAIL(ob_write_string(*allocator_, params.quote_, file_def->quote_, true)) ||
+        OB_FAIL(ob_write_string(*allocator_, params.escape_, file_def->escape_, true)) ||
+        OB_FAIL(ob_write_string(*allocator_, params.nullstr_, file_def->nullstr_, true)) ||
+        OB_FAIL(ob_write_string(*allocator_, params.format_, file_def->format_name_, true))) {
     } else {
-      ret = OB_ERR_UNEXPECTED;
-    }
-    if (OB_SUCC(ret)) {
-      if (OB_FAIL(infer_file_schema(header, rows, *allocator_, schema))) {
-        LOG_WARN("schema inference failed", K(ret));
+      // copy schema with deterministic duplicate-name suffixing (`id` again ->
+      // `id__2`, third -> `id__3` ...)
+      for (int64_t c = 0; OB_SUCC(ret) && c < schema.columns_.count(); ++c) {
+        ObFileCursorDef::ColDef cd;
+        ObString name = schema.columns_.at(c).name_;
+        int64_t dup = 0;
+        for (int64_t k = 0; k < c; ++k) {
+          if (schema.columns_.at(k).name_.case_compare(name) == 0) { ++dup; }
+        }
+        ObSqlString final_name;
+        if (dup > 0) {
+          if (OB_FAIL(final_name.append(name)) ||
+              OB_FAIL(final_name.append("__")) ||
+              OB_FAIL(final_name.append_fmt("%ld", dup + 1))) {
+          } else {
+            name = final_name.string();
+          }
+        }
+        if (OB_FAIL(ret)) {
+        } else if (OB_FAIL(ob_write_string(*allocator_, name, cd.name_, true))) {
+        } else {
+          cd.type_ = static_cast<int8_t>(schema.columns_.at(c).type_);
+          cd.nullable_ = schema.columns_.at(c).nullable_;
+          if (OB_FAIL(file_def->columns_.push_back(cd))) {}
+        }
       }
     }
   }
 
-  // build a values-table def with ACCESS_OBJ rows and typed columns
+  // build a values-table def backed by the streaming cursor; no rows are
+  // materialized here
   ObValuesTableDef *table_def = NULL;
   if (OB_FAIL(ret)) {
   } else if (OB_ISNULL(new_table_item = dml_stmt->create_table_item(*allocator_))) {
@@ -13138,17 +13352,18 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableIte
     ret = OB_ALLOCATE_MEMORY_FAILED;
   } else {
     new_table_item->values_table_def_ = new (table_def) ObValuesTableDef();
-    table_def->access_type_ = ObValuesTableDef::ACCESS_OBJ;
-    table_def->column_cnt_ = schema.columns_.count();
+    table_def->access_type_ = ObValuesTableDef::ACCESS_FILE_CURSOR;
+    table_def->column_cnt_ = file_def->columns_.count();
+    table_def->file_def_ = file_def;
   }
 
   // column types
   ObArray<ObRawExprResType> col_types;
   if (OB_FAIL(ret)) {
   } else {
-    for (int64_t c = 0; OB_SUCC(ret) && c < schema.columns_.count(); ++c) {
+    for (int64_t c = 0; OB_SUCC(ret) && c < file_def->columns_.count(); ++c) {
       ObRawExprResType rt;
-      switch (schema.columns_.at(c).type_) {
+      switch (static_cast<ObFileColumnType>(file_def->columns_.at(c).type_)) {
         case ObFileColumnType::BOOLEAN: rt.set_type(ObTinyIntType); break;
         case ObFileColumnType::BIGINT: rt.set_type(ObIntType); break;
         case ObFileColumnType::DOUBLE: rt.set_type(ObDoubleType); break;
@@ -13159,106 +13374,6 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableIte
       rt.set_collation_type(CS_TYPE_UTF8MB4_BIN);
       rt.set_length(ObAccuracy::MAX_ACCURACY2[0][rt.get_type()].get_length());
       if (OB_FAIL(col_types.push_back(rt))) {}
-    }
-  }
-
-  // fill access_objs_ with typed ObObjParams row by row
-  if (OB_FAIL(ret)) {
-  } else {
-    for (int64_t r = 0; OB_SUCC(ret) && r < rows.count(); ++r) {
-      const ObFileRow &row = rows.at(r);
-      for (int64_t c = 0; OB_SUCC(ret) && c < schema.columns_.count(); ++c) {
-        ObObjParam op;
-        // locate the cell: CSV rows are positional; JSONL rows are [k,v,...]
-        ObString raw;
-        bool is_null = true;
-        if (func_name.case_compare("read_json") == 0
-            || func_name.case_compare("read_ndjson") == 0) {
-          const ObString &key = schema.columns_.at(c).name_;
-          for (int64_t i = 0; i + 1 < row.cells_.count(); i += 2) {
-            if (row.cells_.at(i) == key) {
-              raw = row.cells_.at(i + 1);
-              is_null = raw.empty();
-              break;
-            }
-          }
-        } else if (c < row.cells_.count()) {
-          raw = row.cells_.at(c);
-          is_null = raw.empty() || raw.case_compare("NULL") == 0 || raw.case_compare("\\N") == 0;
-        }
-        if (is_null) {
-          op.set_null();
-        } else {
-          ObString text;
-          if (OB_FAIL(file_cell_to_text(schema.columns_.at(c).type_, raw, false,
-                                        *allocator_, text))) {
-          } else {
-            switch (schema.columns_.at(c).type_) {
-              case ObFileColumnType::BOOLEAN: {
-                op.set_tinyint(text == "1" ? 1 : 0);
-                break;
-              }
-              case ObFileColumnType::BIGINT: {
-                int64_t v = 0;
-                if (OB_FAIL(parse_int64_strict(text, v))) {
-                  op.set_null();
-                } else {
-                  op.set_int(v);
-                }
-                break;
-              }
-              case ObFileColumnType::DOUBLE: {
-                char *ntext = static_cast<char *>(allocator_->alloc(text.length() + 1));
-                if (OB_ISNULL(ntext)) {
-                  ret = OB_ALLOCATE_MEMORY_FAILED;
-                } else {
-                  MEMCPY(ntext, text.ptr(), text.length());
-                  ntext[text.length()] = '\0';
-                  op.set_double(strtod(ntext, NULL));
-                }
-                break;
-              }
-              case ObFileColumnType::DATE: {
-                int32_t v = 0;
-                if (OB_FAIL(ObTimeConverter::str_to_date(text, v))) {
-                  op.set_null();
-                } else {
-                  op.set_date(v);
-                }
-                break;
-              }
-              case ObFileColumnType::DATETIME: {
-                int64_t v = 0;
-                ObTimeConvertCtx cvrt_ctx(NULL, false, false);
-                if (OB_FAIL(ObTimeConverter::str_to_datetime(text, cvrt_ctx, v))) {
-                  op.set_null();
-                } else {
-                  op.set_datetime(v);
-                }
-                break;
-              }
-              default: {
-                char *tbuf = static_cast<char *>(allocator_->alloc(text.length()));
-                if (OB_ISNULL(tbuf)) {
-                  ret = OB_ALLOCATE_MEMORY_FAILED;
-                } else {
-                  MEMCPY(tbuf, text.ptr(), text.length());
-                  op.set_varchar(ObString(static_cast<int32_t>(text.length()), tbuf));
-                  op.set_collation_type(CS_TYPE_UTF8MB4_BIN);
-                }
-                break;
-              }
-            }
-          }
-        }
-        if (OB_FAIL(ret)) {
-        } else if (OB_FAIL(table_def->access_objs_.push_back(op))) {
-        }
-      }
-    }
-    if (OB_SUCC(ret)) {
-      table_def->row_cnt_ = rows.count();
-      table_def->is_const_ = true;
     }
   }
 
@@ -13276,132 +13391,26 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableIte
     new_table_item->is_view_table_ = false;
     if (OB_FAIL(dml_stmt->add_table_item(session_info_, new_table_item))) {
     } else if (OB_FAIL(gen_values_table_column_items_with_names(
-                   schema, col_types, *new_table_item))) {
+                   *file_def, col_types, *new_table_item))) {
     } else {
       table_item = new_table_item;
     }
   }
   return ret;
 }
-static int file_cell_text_from_plain(const ObMiniParquetReader::ColumnChunkData &col,
-                                     int64_t row_idx, ObIAllocator &allocator, ObString &text)
-{
-  int ret = OB_SUCCESS;
-  const char *p = col.plain_bytes_.ptr();
-  const int64_t n = col.plain_bytes_.length();
-  int64_t off = 0;
-  if (row_idx >= col.num_values_) {
-    ret = OB_ERR_UNEXPECTED;
-  } else {
-    for (int64_t r = 0; r < row_idx && OB_SUCC(ret); ++r) {
-      switch (col.physical_type_) {
-        case 0: case 1: off += 4; break;
-        case 2: off += 8; break;
-        case 4: off += 4; break;
-        case 5: off += 8; break;
-        case 6: {
-          if (off + 4 > n) { ret = OB_ERR_UNEXPECTED; }
-          else {
-            const int32_t l = static_cast<int32_t>(static_cast<uint8_t>(p[off]) | (static_cast<uint8_t>(p[off+1]) << 8) | (static_cast<uint8_t>(p[off+2]) << 16) | (static_cast<uint8_t>(p[off+3]) << 24));
-            off += 4 + l;
-          }
-          break;
-        }
-        default: ret = OB_NOT_SUPPORTED; break;
-      }
-    }
-    if (OB_SUCC(ret)) {
-      switch (col.physical_type_) {
-        case 0: {
-          text.assign_ptr(const_cast<char *>((p[off]) ? "1" : "0"), 1);
-          break;
-        }
-        case 1: {
-          int32_t v; MEMCPY(&v, p + off, 4);
-          char tmp[24]; int l = snprintf(tmp, sizeof(tmp), "%d", v);
-          char *b = static_cast<char *>(allocator.alloc(l + 1));
-          if (OB_ISNULL(b)) { ret = OB_ALLOCATE_MEMORY_FAILED; }
-          else { MEMCPY(b, tmp, l); b[l] = 0; text.assign_ptr(b, l); }
-          break;
-        }
-        case 2: {
-          int64_t v; MEMCPY(&v, p + off, 8);
-          char tmp[32]; int l = snprintf(tmp, sizeof(tmp), "%ld", static_cast<long>(v));
-          char *b = static_cast<char *>(allocator.alloc(l + 1));
-          if (OB_ISNULL(b)) { ret = OB_ALLOCATE_MEMORY_FAILED; }
-          else { MEMCPY(b, tmp, l); b[l] = 0; text.assign_ptr(b, l); }
-          break;
-        }
-        case 4: {
-          float v; MEMCPY(&v, p + off, 4);
-          char tmp[40]; int l = snprintf(tmp, sizeof(tmp), "%g", static_cast<double>(v));
-          char *b = static_cast<char *>(allocator.alloc(l + 1));
-          if (OB_ISNULL(b)) { ret = OB_ALLOCATE_MEMORY_FAILED; }
-          else { MEMCPY(b, tmp, l); b[l] = 0; text.assign_ptr(b, l); }
-          break;
-        }
-        case 5: {
-          double v; MEMCPY(&v, p + off, 8);
-          char tmp[40]; int l = snprintf(tmp, sizeof(tmp), "%g", v);
-          char *b = static_cast<char *>(allocator.alloc(l + 1));
-          if (OB_ISNULL(b)) { ret = OB_ALLOCATE_MEMORY_FAILED; }
-          else { MEMCPY(b, tmp, l); b[l] = 0; text.assign_ptr(b, l); }
-          break;
-        }
-        case 6: {
-          if (off + 4 > n) { ret = OB_ERR_UNEXPECTED; }
-          else {
-            const int32_t l = static_cast<int32_t>(static_cast<uint8_t>(p[off]) | (static_cast<uint8_t>(p[off+1]) << 8) | (static_cast<uint8_t>(p[off+2]) << 16) | (static_cast<uint8_t>(p[off+3]) << 24));
-            if (off + 4 + l > n) { ret = OB_ERR_UNEXPECTED; }
-            else {
-              char *b = static_cast<char *>(allocator.alloc(l + 1));
-              if (OB_ISNULL(b)) { ret = OB_ALLOCATE_MEMORY_FAILED; }
-              else { MEMCPY(b, p + off + 4, l); b[l] = 0; text.assign_ptr(b, l); }
-            }
-          }
-          break;
-        }
-        default: ret = OB_NOT_SUPPORTED; break;
-      }
-    }
-  }
-  return ret;
-}
-static int parquet_plain_to_text_rows_impl(const ObMiniParquetReader::ReadResult &rr,
-                                              ObIAllocator &allocator, ObArray<ObFileRow> &rows)
-{
-  int ret = OB_SUCCESS;
-  for (int64_t r = 0; OB_SUCC(ret) && r < rr.num_rows_; ++r) {
-    ObFileRow row;
-    for (int64_t c = 0; OB_SUCC(ret) && c < rr.columns_.count(); ++c) {
-      ObString text;
-      if (OB_FAIL(file_cell_text_from_plain(rr.columns_.at(c), r, allocator, text))) {
-      } else {
-        char *stable = static_cast<char *>(allocator.alloc(text.length() + 1));
-        if (OB_ISNULL(stable)) { ret = OB_ALLOCATE_MEMORY_FAILED; }
-        else {
-          MEMCPY(stable, text.ptr(), text.length()); stable[text.length()] = 0;
-          if (OB_FAIL(row.cells_.push_back(ObString(static_cast<int32_t>(text.length()), stable)))) {}
-        }
-      }
-    }
-    if (OB_SUCC(ret)) { ret = rows.push_back(row); }
-  }
-  return ret;
-}
 int ObDMLResolver::gen_values_table_column_items_with_names(
-    const ObFileSchema &schema, const ObIArray<ObRawExprResType> &res_types, TableItem &table_item)
+    const ObFileCursorDef &file_def, const ObIArray<ObRawExprResType> &res_types,
+    TableItem &table_item)
 {
   int ret = OB_SUCCESS;
   ObValuesTableDef *table_def = table_item.values_table_def_;
   if (OB_ISNULL(params_.expr_factory_) || OB_ISNULL(allocator_) || OB_ISNULL(get_stmt()) ||
       OB_ISNULL(table_def) ||
-      OB_UNLIKELY(schema.columns_.count() == 0 ||
-                  table_def->access_objs_.count() % schema.columns_.count() != 0 ||
-                  res_types.count() != schema.columns_.count())) {
+      OB_UNLIKELY(file_def.columns_.count() == 0 ||
+                  res_types.count() != file_def.columns_.count())) {
     ret = OB_ERR_UNEXPECTED;
   } else {
-    for (int64_t i = 0; OB_SUCC(ret) && i < schema.columns_.count(); ++i) {
+    for (int64_t i = 0; OB_SUCC(ret) && i < file_def.columns_.count(); ++i) {
       ObColumnRefRawExpr *column_expr = NULL;
       if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_REF_COLUMN, column_expr))) {
       } else if (OB_ISNULL(column_expr)) {
@@ -13409,7 +13418,7 @@ int ObDMLResolver::gen_values_table_column_items_with_names(
       } else {
         column_expr->set_result_type(res_types.at(i));
         column_expr->set_ref_id(table_item.table_id_, i + OB_APP_MIN_COLUMN_ID);
-        const ObString &col_name = schema.columns_.at(i).name_;
+        const ObString &col_name = file_def.columns_.at(i).name_;
         column_expr->set_column_attr(table_item.table_name_, col_name);
         if (OB_FAIL(column_expr->add_flag(IS_COLUMN))) {
         } else {

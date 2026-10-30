@@ -23,11 +23,13 @@
 #include "sql/resolver/expr/ob_raw_expr_util.h"
 #include "sql/resolver/dml/ob_select_stmt.h"
 #include "sql/resolver/expr/ob_shared_expr_resolver.h"
+#include "sql/engine/file/ob_file_scan_utils.h"
 namespace oceanbase
 {
 namespace sql
 {
 struct ObFileSchema;
+struct ObFileCursorDef;
 class ObEqualAnalysis;
 class ObChildStmtResolver;
 class ObDelUpdStmt;
@@ -782,7 +784,20 @@ private:
   int resolve_file_table_item(const ParseNode &table_node, TableItem *&table_item);
   int read_local_file(const ObString &path, ObIAllocator &allocator, char *&buf, int64_t &len);
   static int parse_int64_strict(const ObString &s, int64_t &v);
-  int gen_values_table_column_items_with_names(const ObFileSchema &schema, const ObIArray<ObRawExprResType> &res_types, TableItem &table_item);
+  int parse_file_table_param(const ParseNode &param_node,
+                             common::ObString &name,
+                             ParseNode *&value_node);
+  int resolve_file_param_literal(ParseNode *node, bool want_bool,
+                                 bool &bval, common::ObString &sval, int64_t &ival);
+  int canonicalize_local_path(const common::ObString &path, common::ObString &canonical);
+  int infer_file_schema_streaming(ObFileSourceFormat fmt,
+                                  const common::ObString &canonical_path,
+                                  const ObFileParamSpec &params,
+                                  common::ObIAllocator &allocator,
+                                  ObFileSchema &schema);
+  int gen_values_table_column_items_with_names(const ObFileCursorDef &file_def,
+                                               const ObIArray<ObRawExprResType> &res_types,
+                                               TableItem &table_item);
   int resolve_values_table_for_select(const ParseNode &table_node,
                                       ObValuesTableDef &table_values);
   int resolve_values_table_for_insert(const ParseNode &table_node,

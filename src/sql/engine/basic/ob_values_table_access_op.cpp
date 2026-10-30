@@ -32,13 +32,29 @@ OB_SERIALIZE_MEMBER_INHERIT(ObValuesTableAccessSpec,
                             value_exprs_,
                             start_param_idx_,
                             end_param_idx_,
-                            obj_params_);
+                            obj_params_,
+                            file_format_,
+                            file_path_,
+                            file_delimiter_,
+                            file_quote_,
+                            file_escape_,
+                            file_nullstr_,
+                            file_format_name_,
+                            file_has_header_,
+                            file_sample_size_,
+                            file_sig_size_,
+                            file_sig_mtime_sec_,
+                            file_sig_mtime_nsec_,
+                            file_col_names_,
+                            file_col_types_,
+                            file_col_nullables_);
 
 ObValuesTableAccessOp::ObValuesTableAccessOp(ObExecContext &exec_ctx,
                                              const ObOpSpec &spec,
                                              ObOpInput *input)
   : ObOperator(exec_ctx, spec, input), datum_caster_(), cm_(CM_NONE),
-    row_idx_(0), row_cnt_(0) {}
+    row_idx_(0), row_cnt_(0), file_cursor_(NULL), file_alloc_("FileTblBatch"),
+    file_batch_idx_(0), file_eof_(false) {}
 
 int ObValuesTableAccessOp::inner_open()
 {
@@ -71,6 +87,11 @@ int ObValuesTableAccessOp::inner_open()
       } else if (ObValuesTableDef::ACCESS_OBJ == MY_SPEC.access_type_) {
         int64_t column_cnt = MY_SPEC.column_exprs_.count();
         row_cnt_ = MY_SPEC.obj_params_.count() / column_cnt;
+      } else if (ObValuesTableDef::ACCESS_FILE_CURSOR == MY_SPEC.access_type_) {
+        bool identity_ok = false;
+        if (OB_FAIL(open_file_cursor(identity_ok))) {
+          LOG_WARN("failed to open file cursor", K(ret));
+        }
       } else {
         int64_t column_cnt = MY_SPEC.column_exprs_.count();
         row_cnt_ = MY_SPEC.value_exprs_.count() / column_cnt;
@@ -80,10 +101,147 @@ int ObValuesTableAccessOp::inner_open()
   return ret;
 }
 
+int ObValuesTableAccessOp::open_file_cursor(bool &identity_ok)
+{
+  int ret = OB_SUCCESS;
+  identity_ok = false;
+  ObFileParamSpec params;
+  params.has_header_ = MY_SPEC.file_has_header_;
+  params.sample_size_ = MY_SPEC.file_sample_size_;
+  params.delimiter_ = MY_SPEC.file_delimiter_;
+  params.quote_ = MY_SPEC.file_quote_;
+  params.escape_ = MY_SPEC.file_escape_;
+  params.nullstr_ = MY_SPEC.file_nullstr_;
+  params.format_ = MY_SPEC.file_format_name_;
+  // change detection: the file must still look like it did at resolve time
+  ObFileSignature now_sig;
+  const ObString path = MY_SPEC.file_path_;
+  if (OB_FAIL(stat_file_signature(path, now_sig))) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "file disappeared or became unreadable");
+  } else {
+    ObFileSignature resolve_sig;
+    resolve_sig.size_ = MY_SPEC.file_sig_size_;
+    resolve_sig.mtime_sec_ = MY_SPEC.file_sig_mtime_sec_;
+    resolve_sig.mtime_nsec_ = MY_SPEC.file_sig_mtime_nsec_;
+    if (resolve_sig.is_valid() && now_sig != resolve_sig) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_USER_ERROR(OB_INVALID_ARGUMENT, "file changed between resolve and execution");
+    }
+  }
+  // column pruning mask: columns beyond the projected count are not decoded
+  ObSEArray<bool, 8> needed;
+  const int64_t col_cnt = MY_SPEC.file_col_names_.count();
+  for (int64_t c = 0; OB_SUCC(ret) && c < col_cnt; ++c) {
+    if (OB_FAIL(needed.push_back(c < MY_SPEC.column_exprs_.count()))) {}
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(make_file_row_cursor(
+                 static_cast<ObFileSourceFormat>(MY_SPEC.file_format_),
+                 path, params, needed, file_alloc_, file_cursor_))) {
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "cannot open file");
+  } else if (OB_ISNULL(file_cursor_)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(file_cursor_->open())) {
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "cannot read file");
+  } else {
+    file_open_sig_ = now_sig;
+    identity_ok = true;
+  }
+  return ret;
+}
+
+int ObValuesTableAccessOp::refill_file_batch()
+{
+  int ret = OB_SUCCESS;
+  file_batch_.reset();
+  file_alloc_.reuse();
+  file_batch_idx_ = 0;
+  const int64_t col_cnt = MY_SPEC.file_col_names_.count();
+  ObFileRow row;
+  while (OB_SUCC(ret) && file_batch_.count() < kFileBatchRows * col_cnt) {
+    row.cells_.reset();
+    int gr = file_cursor_->next_row(row);
+    if (OB_ITER_END == gr) {
+      file_eof_ = true;
+      break;
+    } else if (OB_INVALID_DATA == gr) {
+      ret = OB_INVALID_DATA;
+      LOG_USER_ERROR(OB_INVALID_DATA, "bad row in file, at line %ld", file_cursor_->current_line());
+    } else if (OB_SUCCESS != gr) {
+      ret = gr;
+    } else {
+      // convert to typed ObObjParams; JSONL rows carry [k,v,...] pairs
+      const bool is_jsonl = static_cast<ObFileSourceFormat>(MY_SPEC.file_format_)
+          == ObFileSourceFormat::JSONL;
+      for (int64_t c = 0; OB_SUCC(ret) && c < col_cnt; ++c) {
+        ObObjParam op;
+        ObString raw;
+        bool is_null = true;
+        if (is_jsonl) {
+          const ObString &key = MY_SPEC.file_col_names_.at(c);
+          for (int64_t i = 0; i + 1 < row.cells_.count(); i += 2) {
+            if (row.cells_.at(i) == key) {
+              raw = row.cells_.at(i + 1);
+              is_null = raw.empty();
+              break;
+            }
+          }
+        } else if (c < row.cells_.count()) {
+          raw = row.cells_.at(c);
+          is_null = raw.empty();
+        }
+        if (is_null) {
+          op.set_null();
+        } else if (OB_FAIL(file_cell_to_obj(
+                static_cast<ObFileColumnType>(MY_SPEC.file_col_types_.at(c)),
+                raw, false, file_alloc_, op))) {
+          op.set_null();
+        }
+        if (OB_SUCC(ret) && OB_FAIL(file_batch_.push_back(op))) {
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+void ObValuesTableAccessOp::close_file_cursor()
+{
+  if (NULL != file_cursor_) {
+    file_cursor_->close();
+    file_alloc_.free(file_cursor_);
+    file_cursor_ = NULL;
+  }
+  file_batch_.reset();
+  file_batch_idx_ = 0;
+  file_eof_ = false;
+}
+
 int ObValuesTableAccessOp::inner_rescan()
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(ObOperator::inner_rescan())) {
+  } else if (ObValuesTableDef::ACCESS_FILE_CURSOR == MY_SPEC.access_type_) {
+    // identity check: the file must be unchanged since open; then restart
+    ObFileSignature now_sig;
+    if (OB_FAIL(stat_file_signature(MY_SPEC.file_path_, now_sig))) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_USER_ERROR(OB_INVALID_ARGUMENT, "file disappeared on rescan");
+    } else if (now_sig != file_open_sig_) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_USER_ERROR(OB_INVALID_ARGUMENT, "file changed during execution");
+    } else {
+      close_file_cursor();
+      bool identity_ok = false;
+      if (OB_FAIL(open_file_cursor(identity_ok))) {
+        LOG_WARN("failed to reopen file cursor on rescan", K(ret));
+      }
+    }
+    row_idx_ = 0;
+    file_batch_idx_ = 0;
+    file_batch_.reset();
+    file_eof_ = false;
   } else {
     row_idx_ = 0;
   }
@@ -94,6 +252,19 @@ int ObValuesTableAccessOp::switch_iterator()
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(ObOperator::inner_switch_iterator())) {
+  } else if (ObValuesTableDef::ACCESS_FILE_CURSOR == MY_SPEC.access_type_) {
+    // restart the stream (same statement scan): close and re-open
+    row_idx_ = 0;
+    file_batch_idx_ = 0;
+    file_batch_.reset();
+    file_eof_ = false;
+    if (NULL != file_cursor_) {
+      close_file_cursor();
+      bool identity_ok = false;
+      if (OB_FAIL(open_file_cursor(identity_ok))) {
+        LOG_WARN("failed to reopen file cursor on switch_iterator", K(ret));
+      }
+    }
   } else {
     row_idx_ = 0;
   }
@@ -266,13 +437,24 @@ OB_INLINE int ObValuesTableAccessOp::calc_next_row()
   int64_t col_num = MY_SPEC.column_exprs_.count();
   int64_t col_idx = 0;
   ObPhysicalPlanCtx *plan_ctx = GET_PHY_PLAN_CTX(ctx_);
-  if (row_idx_ == row_cnt_) {
+  if (ObValuesTableDef::ACCESS_FILE_CURSOR == MY_SPEC.access_type_) {
+    // streaming: pull the next batch of typed objects when exhausted
+    while (OB_SUCC(ret) && file_batch_idx_ >= file_batch_.count() && !file_eof_) {
+      if (OB_FAIL(refill_file_batch())) {
+      }
+    }
+    if (OB_FAIL(ret)) {
+    } else if (file_batch_idx_ >= file_batch_.count()) {
+      ret = OB_ITER_END;
+    }
+  } else if (row_idx_ == row_cnt_) {
     ret = OB_ITER_END;
   } else if (ObValuesTableDef::FOLD_ACCESS_EXPR == MY_SPEC.access_type_ &&
              OB_FAIL(plan_ctx->replace_batch_param_datum(row_idx_,
                                           MY_SPEC.start_param_idx_,
                                           MY_SPEC.end_param_idx_ - MY_SPEC.start_param_idx_ + 1))) {
-  } else {
+  }
+  if (OB_SUCC(ret) && OB_ITER_END != ret) {
     while (OB_SUCC(ret) && col_idx < col_num) {
       ObExpr *col_expr = MY_SPEC.column_exprs_.at(col_idx);
       switch (MY_SPEC.access_type_)
@@ -304,6 +486,17 @@ OB_INLINE int ObValuesTableAccessOp::calc_next_row()
           }
           break;
         }
+        case ObValuesTableDef::ACCESS_FILE_CURSOR: {
+          int64_t idx = file_batch_idx_ + col_idx;
+          if (idx >= file_batch_.count()) {
+            ret = OB_ERR_UNEXPECTED;
+          } else {
+            const ObObj &param = file_batch_.at(idx);
+            if (OB_FAIL(calc_datum_from_param(param, col_expr))) {
+            }
+          }
+          break;
+        }
       };
       col_idx++;
     } // while end
@@ -318,7 +511,11 @@ OB_INLINE int ObValuesTableAccessOp::calc_next_row()
       }
     }
     if (OB_SUCC(ret)) {
-      ++row_idx_;
+      if (ObValuesTableDef::ACCESS_FILE_CURSOR == MY_SPEC.access_type_) {
+        file_batch_idx_ += col_num;
+      } else {
+        ++row_idx_;
+      }
     }
   }
   return ret;
@@ -328,6 +525,9 @@ int ObValuesTableAccessOp::inner_close()
 {
   int ret = OB_SUCCESS;
   row_idx_ = 0;
+  if (ObValuesTableDef::ACCESS_FILE_CURSOR == MY_SPEC.access_type_) {
+    close_file_cursor();
+  }
   if (OB_FAIL(datum_caster_.destroy())) {
   }
   return ret;

@@ -1,0 +1,23 @@
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
+load("//bazel:defs.bzl", "cc_library")
+
+package(default_testonly = True)
+
+cc_library(
+    name = "file_scan_cases",
+    srcs = ["test_file_scan_utils.cpp"],
+    alwayslink = True,
+    deps = [
+        "//src/oblib:oblib_unit_test_internal_headers",
+        "//src/sql:file_scan_test_objects",
+        "//src/sql:sql_runtime_interface",
+        "//bazel/third_party:gtest",
+    ],
+)
+
+cc_test(
+    name = "test_file_scan_utils",
+    linkstatic = True,
+    deps = [":file_scan_cases", "//unittest/sql:test_error_name_stub", "//src/oblib:oblib_test_runtime"],
+    target_compatible_with = ["@platforms//os:linux"],
+)

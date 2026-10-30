@@ -271,6 +271,50 @@ int ObSql::fill_result_set(ObResultSet &result_set,
       break;
     }
     case stmt::T_EXPLAIN: {
+      // DESCRIBE over a single file table: 6 metadata columns
+      bool file_desc = false;
+      if (basic_stmt.is_explain_stmt()) {
+        const ObExplainStmt *es = static_cast<const ObExplainStmt*>(&basic_stmt);
+        const ObDMLStmt *child = es->get_explain_query_stmt();
+        if (OB_NOT_NULL(child) && child->is_values_table_query()
+            && OB_NOT_NULL(child->get_table_item(0))
+            && OB_NOT_NULL(child->get_table_item(0)->values_table_def_)
+            && ObValuesTableDef::ACCESS_FILE_CURSOR
+                 == child->get_table_item(0)->values_table_def_->access_type_) {
+          const ObSelectStmt *sel =
+              OB_NOT_NULL(child) ? dynamic_cast<const ObSelectStmt *>(child) : NULL;
+          file_desc = OB_NOT_NULL(sel) && sel->get_select_item_size() > 0;
+          for (int64_t i = 0; file_desc && i < sel->get_select_item_size(); ++i) {
+            const ObRawExpr *expr = sel->get_select_item(i).expr_;
+            file_desc = OB_NOT_NULL(expr) && expr->is_column_ref_expr()
+                && static_cast<const ObColumnRefRawExpr*>(expr)->get_table_id()
+                       == child->get_table_item(0)->table_id_;
+          }
+        }
+      }
+      if (file_desc) {
+        static const char *NAMES[] = {"column_name", "column_type", "null",
+                                      "key", "default", "extra"};
+        if (OB_FAIL(result_set.reserve_field_columns(6))) {
+        } else {
+          for (int64_t c = 0; OB_SUCC(ret) && c < 6; ++c) {
+            field = ObField();
+            ObString tname = ObString::make_string("describe_table");
+            ObString cname = ObString::make_string(NAMES[c]);
+            field.tname_ = tname;
+            field.org_tname_ = tname;
+            field.cname_ = cname;
+            field.org_cname_ = cname;
+            field.type_.set_type(ObVarcharType);
+            field.charsetnr_ = CS_TYPE_UTF8MB4_GENERAL_CI;
+            field.type_.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
+            field.type_.set_collation_level(CS_LEVEL_IMPLICIT);
+            field.type_.set_varchar(type_name);
+            if (OB_FAIL(result_set.add_field_column(field))) {}
+          }
+        }
+        break;
+      }
       ObString tname = ObString::make_string("explain_table");
       ObString cname = ObString::make_string("Query Plan");
       field.tname_ = tname;

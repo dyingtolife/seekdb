@@ -1,0 +1,16 @@
+# Unit tests for the SQL module.
+# The sql module builds as one big library; unit tests link the test runtime
+# plus the headers they exercise.
+load("//bazel:defs.bzl", "cc_library")
+
+# Test-only definition of common::ob_error_name (production symbol lives in
+# src/share/ob_errno.cpp which unit tests must not link; the module dependency
+# aspect forbids //src/share implementation targets). OB_LOG macros in the
+# file-scan implementation only need the symbol to exist at link time.
+cc_library(
+    name = "test_error_name_stub",
+    testonly = True,
+    srcs = ["ob_test_error_name.cpp"],
+    deps = ["//src/oblib:oblib_unit_test_internal_headers"],
+    visibility = ["//unittest/sql:__subpackages__"],
+)

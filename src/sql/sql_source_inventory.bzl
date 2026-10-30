@@ -1250,6 +1250,7 @@ SQL_UNITY_GROUPS = [
             "src/sql/resolver/cmd/ob_get_diagnostics_resolver.cpp",
             "src/sql/resolver/cmd/ob_get_diagnostics_stmt.cpp",
             "src/sql/resolver/cmd/ob_kill_resolver.cpp",
+            "src/sql/resolver/cmd/ob_copy_to_resolver.cpp",
             "src/sql/resolver/cmd/ob_load_data_resolver.cpp",
             "src/sql/resolver/cmd/ob_load_data_stmt.cpp",
             "src/sql/resolver/cmd/ob_set_names_resolver.cpp",

@@ -16,6 +16,8 @@
 
 #define USING_LOG_PREFIX SQL_OPT
 #include "sql/optimizer/ob_explain_log_plan.h"
+#include "sql/engine/file/ob_file_scan_utils.h"
+#include "sql/resolver/dml/ob_select_stmt.h"
 #include "sql/optimizer/ob_log_values.h"
 #include "sql/code_generator/ob_code_generator.h"
 
@@ -32,6 +34,30 @@ using namespace oceanbase::sql::log_op_def;
  *  2. generate the plan text from the logical plan and put the text in the buffer
  *     and remember the logical plan as well.
  */
+// DESCRIBE SELECT * FROM read_*(): detect the single-file-table pattern and
+// emit one metadata row per file column instead of plan text.
+static bool detect_file_describe(const ObDMLStmt *child_stmt)
+{
+  bool is_file_desc = false;
+  const ObValuesTableDef *def = NULL;
+  if (OB_NOT_NULL(child_stmt) && child_stmt->is_values_table_query()
+      && OB_NOT_NULL(child_stmt->get_table_item(0))
+      && OB_NOT_NULL(def = child_stmt->get_table_item(0)->values_table_def_)
+      && ObValuesTableDef::ACCESS_FILE_CURSOR == def->access_type_) {
+    // all select items must be plain column refs of that table
+    const ObSelectStmt *sel = NULL;
+    is_file_desc = OB_NOT_NULL(sel = dynamic_cast<const ObSelectStmt *>(child_stmt))
+        && sel->get_select_item_size() > 0;
+    for (int64_t i = 0; is_file_desc && i < sel->get_select_item_size(); ++i) {
+      const ObRawExpr *expr = sel->get_select_item(i).expr_;
+      is_file_desc = OB_NOT_NULL(expr) && expr->is_column_ref_expr()
+          && static_cast<const ObColumnRefRawExpr*>(expr)->get_table_id()
+                 == child_stmt->get_table_item(0)->table_id_;
+    }
+  }
+  return is_file_desc;
+}
+
 int ObExplainLogPlan::generate_normal_raw_plan()
 {
   int ret = OB_SUCCESS;
@@ -51,6 +77,66 @@ int ObExplainLogPlan::generate_normal_raw_plan()
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_ERROR("failed to create log plan for explain stmt");
     } else if (OB_FAIL(child_plan->generate_plan())) {
+    } else if (OB_UNLIKELY(detect_file_describe(child_stmt))) {
+      // file-table describe: fill the values op with column metadata rows
+      const TableItem *ftable = child_stmt->get_table_item(0);
+      const ObFileCursorDef *fdef = ftable->values_table_def_->file_def_;
+      if (OB_ISNULL(values_op) || OB_ISNULL(fdef)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else {
+        static const char *K_COL = "column_name";
+        static const char *K_TYPE = "column_type";
+        static const char *K_NULL = "null";
+        static const char *K_KEY = "key";
+        static const char *K_DEF = "default";
+        static const char *K_EXTRA = "extra";
+        // header row
+        {
+          ObObj objs[6];
+          const char *vals[6] = {K_COL, K_TYPE, K_NULL, K_KEY, K_DEF, K_EXTRA};
+          for (int64_t c = 0; OB_SUCC(ret) && c < 6; ++c) {
+            objs[c].set_varchar(ObString::make_string(vals[c]));
+          }
+          if (OB_SUCC(ret)) {
+            ObNewRow row;
+            row.cells_ = objs;
+            row.count_ = 6;
+            if (OB_FAIL(values_op->add_row(row))) {}
+          }
+        }
+        for (int64_t i = 0; OB_SUCC(ret) && i < fdef->columns_.count(); ++i) {
+          const ObFileCursorDef::ColDef &cd = fdef->columns_.at(i);
+          ObObj objs[6];
+          objs[0].set_varchar(cd.name_);
+          const char *ts = file_column_type_str(static_cast<ObFileColumnType>(cd.type_));
+          objs[1].set_varchar(ObString::make_string(ts));
+          objs[2].set_varchar(ObString::make_string(cd.nullable_ ? "YES" : "NO"));
+          objs[3].set_varchar(ObString::make_string(""));
+          objs[4].set_varchar(ObString::make_string("NULL"));
+          objs[5].set_varchar(ObString::make_string(""));
+          if (OB_SUCC(ret)) {
+            ObNewRow row;
+            row.cells_ = objs;
+            row.count_ = 6;
+            if (OB_FAIL(values_op->add_row(row))) {}
+          }
+        }
+        if (OB_SUCC(ret)) {
+          values_op->set_op_id(0);
+          set_max_op_id(1);
+        }
+        // skip the normal plan-text path
+        if (OB_SUCC(ret)) {
+          get_optimizer_context().get_all_exprs().reuse();
+          if (OB_FAIL(allocate_output_expr_for_values_op(*values_op))) {
+          } else {
+            get_optimizer_context().set_plan_type(ObPhyPlanType::OB_PHY_PLAN_LOCAL,
+                                                  ObPhyPlanType::OB_PHY_PLAN_LOCAL,
+                                                  false);
+          }
+        }
+        return ret;
+      }
     } else if (OB_FAIL(remove_duplicate_constraints())) {
     } else if (OB_FAIL(check_explain_generate_plan_with_outline(child_plan))) {
     } else if (OB_FAIL(ObCodeGenerator::detect_batch_size(*child_plan, batch_size))) {

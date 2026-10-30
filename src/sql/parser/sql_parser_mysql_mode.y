@@ -514,7 +514,7 @@ END_P SET_VAR DELIMITER
 %type <node> column_list_with_boost with_param_column_ref
 %type <node> es_sql_opt
 %type <node> hybrid_search_expr hybrid_search_param
-%type <node> file_table_expr file_table_func_name file_table_param_list file_table_param copy_stmt
+%type <node> file_table_expr file_table_func_name file_table_param_list file_table_param file_table_param_name copy_stmt
 %type <node> vector_similarity_expr vector_similarity_metric
 %type <node> algorithm_opt lock_opt
 %type <node> flush_privileges_stmt opt_flush_privileges_scope
@@ -16716,13 +16716,13 @@ file_table_func_name '(' literal ')' relation_name
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 3, $1, $3, $6);
 }
-| file_table_func_name '(' literal file_table_param_list ')' relation_name
+| file_table_func_name '(' literal ',' file_table_param_list ')' relation_name
 {
-  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 4, $1, $3, $4, $6);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 4, $1, $3, $5, $7);
 }
-| file_table_func_name '(' literal file_table_param_list ')' AS relation_name
+| file_table_func_name '(' literal ',' file_table_param_list ')' AS relation_name
 {
-  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 4, $1, $3, $4, $7);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE_EXPRESSION, 4, $1, $3, $5, $8);
 }
 | file_table_func_name '(' literal ')' %prec LOWER_PARENS
 {
@@ -16735,18 +16735,49 @@ file_table_func_name '(' literal ')' relation_name
 file_table_param_list:
 file_table_param
 {
-  $$ = $1;
+  malloc_list_node($$, result->malloc_pool_, T_EXPR_LIST, 2, 1, $1);
 }
 | file_table_param_list ',' file_table_param
 {
-  merge_nodes($$, result, T_EXPR_LIST, $3);
+  push_back_list(result->malloc_pool_, result, $$, $1, $3);
 }
 ;
 
 file_table_param:
-NAME_OB '=' literal
+file_table_param_name COMP_EQ literal
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_EXPR_LIST, 2, $1, $3);
+}
+| file_table_param_name COMP_EQ '-' literal
+{
+  ParseNode *val = $4;
+  if (NULL != val && T_INT == val->type_) {
+    val->value_ = -val->value_;
+  }
+  malloc_non_terminal_node($$, result->malloc_pool_, T_EXPR_LIST, 2, $1, val);
+}
+| file_table_param_name literal
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_EXPR_LIST, 2, $1, $2);
+}
+| file_table_param_name NAME_OB
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_EXPR_LIST, 2, $1, $2);
+}
+| file_table_param_name
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_EXPR_LIST, 1, $1);
+}
+;
+
+file_table_param_name:
+NAME_OB
+{
+  $$ = $1;
+}
+| FORMAT
+{
+  make_name_node($$, result->malloc_pool_, "format");
 }
 ;
 

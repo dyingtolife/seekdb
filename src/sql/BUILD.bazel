@@ -164,7 +164,39 @@ cc_library(
         if dep not in _SQL_PUBLIC_CLOSURE_SHARE_DEPS
     ],
     tags = ["manual"],
-    visibility = ["//src:__subpackages__"],
+    visibility = ["//src:__subpackages__", "//unittest/sql:__subpackages__"],
+)
+
+# White-box unit tests compile the streaming file-scan translation units
+# directly so the tests exercise the exact committed sources without linking
+# the full SQL runtime. Private-inclusion parity with the module unity build
+# is intentional for these test-only objects.
+cc_library(
+    name = "file_scan_test_objects",
+    testonly = True,
+    srcs = [
+        "engine/file/ob_file_scan_utils.cpp",
+        "engine/file/ob_parquet_reader.cpp",
+    ],
+    hdrs = glob(
+        ["engine/file/*.h"],
+        allow_empty = True,
+    ),
+    implementation_deps = [
+        ":sql_runtime_internal_headers",
+        ":sql_runtime_interface",
+        "//src/oblib:common_sql_mode",
+        "//src/oblib:oblib_base",
+        "//src/oblib:oblib_common",
+        "//src/oblib:oblib_compression",
+        "//src/oblib:oblib_foundation",
+        "//src/oblib:oblib_memory_primitives",
+        "//src/share:cache",
+        "//src/share:core_types",
+    ],
+    includes = ["."],
+    tags = ["manual"],
+    visibility = ["//unittest/sql:__subpackages__"],
 )
 
 # Observer is the final composition root for the legacy physical retrieval
@@ -202,7 +234,7 @@ cc_library(
     ],
     implementation_deps = _SQL_PRIVATE_HEADER_SHARE_DEPS,
     tags = ["manual"],
-    visibility = ["//src/sql:__subpackages__"],
+    visibility = ["//src/sql:__subpackages__", "//unittest/sql:__subpackages__"],
 )
 
 _SQL_RUNTIME_UNITY_GROUPS = groups_without(

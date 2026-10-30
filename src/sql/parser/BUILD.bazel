@@ -119,7 +119,7 @@ cc_library(
     ],
     includes = ["."],
     tags = ["manual"],
-    visibility = ["//src/sql:__subpackages__"],
+    visibility = ["//src/sql:__subpackages__", "//unittest/sql:__subpackages__"],
 )
 
 # The Observer retrieval composition target needs the concrete boolean-query
@@ -146,10 +146,14 @@ cc_library(
         ":parser_public_headers",
         "//src/oblib:common_sql_mode",
         "//src/query:_sql_parser_types",
+        # ob_item_type.h (via parse_node.h) includes
+        # share/cache/ob_cache_type.h; declare the owner so dependent
+        # compile sandboxes materialize that header.
+        "//src/share:cache",
     ],
     includes = ["."],
     tags = ["manual"],
-    visibility = ["//src/sql:__subpackages__"],
+    visibility = ["//src/sql:__subpackages__", "//unittest/sql:__subpackages__"],
 )
 
 cc_library(
@@ -221,7 +225,7 @@ cc_library(
         ":_server_parser_cxx",
     ],
     tags = ["manual"],
-    visibility = ["//src/sql:__subpackages__"],
+    visibility = ["//src/sql:__subpackages__", "//unittest/sql:__subpackages__"],
 )
 
 cc_library(

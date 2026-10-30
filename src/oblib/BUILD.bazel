@@ -1238,7 +1238,7 @@ cc_library(
         ":common_sql_mode",
         ":oblib_foundation",
     ],
-    visibility = ["//unittest/oblib:__pkg__"],
+    visibility = ["//src/sql:__pkg__", "//unittest/oblib:__pkg__", "//unittest/sql:__subpackages__"],
 )
 
 # Unit tests compile against public OBLib interfaces, but may link this
@@ -1272,5 +1272,5 @@ cc_library(
         "//conditions:default": [],
     }),
     linkopts = sanity_linkopts(),
-    visibility = ["//unittest/oblib:__pkg__"],
+    visibility = ["//src/sql:__pkg__", "//unittest/oblib:__pkg__", "//unittest/sql:__subpackages__"],
 )

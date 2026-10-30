@@ -19,6 +19,7 @@
 
 #include "sql/engine/ob_operator.h"
 #include "sql/engine/expr/ob_datum_cast.h"
+#include "sql/engine/file/ob_file_scan_utils.h"
 
 namespace oceanbase
 {
@@ -32,7 +33,12 @@ class ObValuesTableAccessSpec : public ObOpSpec
 public:
   ObValuesTableAccessSpec(common::ObIAllocator &alloc, const ObPhyOperatorType type)
     : ObOpSpec(alloc, type), access_type_(ObValuesTableDef::ACCESS_EXPR), column_exprs_(alloc),
-      value_exprs_(alloc), start_param_idx_(-1), end_param_idx_(-1), obj_params_(alloc) {}
+      value_exprs_(alloc), start_param_idx_(-1), end_param_idx_(-1), obj_params_(alloc),
+      file_format_(0), file_path_(), file_delimiter_(), file_quote_(),
+      file_escape_(), file_nullstr_(), file_format_name_(),
+      file_has_header_(true), file_sample_size_(-1), file_sig_size_(-1),
+      file_sig_mtime_sec_(0), file_sig_mtime_nsec_(0),
+      file_col_names_(alloc), file_col_types_(alloc), file_col_nullables_(alloc) {}
   INHERIT_TO_STRING_KV("op_spec", ObOpSpec, K_(access_type));
   ObValuesTableDef::TableAccessType access_type_;
   common::ObFixedArray<ObExpr *, common::ObIAllocator> column_exprs_;
@@ -40,6 +46,22 @@ public:
   int64_t start_param_idx_;
   int64_t end_param_idx_;
   common::ObFixedArray<ObObj, common::ObIAllocator> obj_params_;
+  // file-backed streaming scan (ACCESS_FILE_CURSOR)
+  int8_t file_format_;
+  common::ObString file_path_;
+  common::ObString file_delimiter_;
+  common::ObString file_quote_;
+  common::ObString file_escape_;
+  common::ObString file_nullstr_;
+  common::ObString file_format_name_;
+  bool file_has_header_;
+  int64_t file_sample_size_;
+  int64_t file_sig_size_;
+  int64_t file_sig_mtime_sec_;
+  int64_t file_sig_mtime_nsec_;
+  common::ObFixedArray<common::ObString, common::ObIAllocator> file_col_names_;
+  common::ObFixedArray<int8_t, common::ObIAllocator> file_col_types_;
+  common::ObFixedArray<bool, common::ObIAllocator> file_col_nullables_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObValuesTableAccessSpec);
 };
@@ -68,6 +90,11 @@ private:
                             ObExpr &src_expr,
                             ObDatumMeta &src_meta,
                             ObObjMeta &src_obj_meta);
+  // file-cursor helpers
+  int open_file_cursor(bool &identity_ok);
+  int refill_file_batch();
+  void close_file_cursor();
+  static constexpr int64_t kFileBatchRows = 2048;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObValuesTableAccessOp);
 
@@ -76,6 +103,13 @@ private:
   common::ObCastMode cm_;
   int64_t row_idx_;
   int64_t row_cnt_;
+  // file-cursor state
+  sql::IFileRowCursor *file_cursor_;
+  common::ObArenaAllocator file_alloc_;
+  common::ObArray<common::ObObjParam> file_batch_;
+  int64_t file_batch_idx_;
+  ObFileSignature file_open_sig_;
+  bool file_eof_;
 };
 
 } // end namespace sql

@@ -4497,6 +4497,46 @@ int ObValuesTableDef::deep_copy(const ObValuesTableDef &other,
       } else if (OB_FAIL(column_types_.push_back(tmp_type))) {
       }
     }
+    if (OB_SUCC(ret) && NULL != other.file_def_) {
+      void *fbuf = NULL;
+      if (OB_ISNULL(fbuf = allocator->alloc(sizeof(ObFileCursorDef)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+      } else {
+        ObFileCursorDef *fd = new (fbuf) ObFileCursorDef();
+        if (OB_FAIL(fd->deep_copy(*(other.file_def_), *allocator))) {
+        } else {
+          file_def_ = fd;
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+int ObFileCursorDef::deep_copy(const ObFileCursorDef &other, common::ObIAllocator &allocator)
+{
+  int ret = OB_SUCCESS;
+  format_ = other.format_;
+  has_header_ = other.has_header_;
+  sample_size_ = other.sample_size_;
+  file_size_ = other.file_size_;
+  mtime_sec_ = other.mtime_sec_;
+  mtime_nsec_ = other.mtime_nsec_;
+  if (OB_FAIL(ob_write_string(allocator, other.path_, path_, true)) ||
+      OB_FAIL(ob_write_string(allocator, other.delimiter_, delimiter_, true)) ||
+      OB_FAIL(ob_write_string(allocator, other.quote_, quote_, true)) ||
+      OB_FAIL(ob_write_string(allocator, other.escape_, escape_, true)) ||
+      OB_FAIL(ob_write_string(allocator, other.nullstr_, nullstr_, true)) ||
+      OB_FAIL(ob_write_string(allocator, other.format_name_, format_name_, true))) {
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < other.columns_.count(); ++i) {
+      ColDef c;
+      c.type_ = other.columns_.at(i).type_;
+      c.nullable_ = other.columns_.at(i).nullable_;
+      if (OB_FAIL(ob_write_string(allocator, other.columns_.at(i).name_, c.name_, true))) {
+      } else if (OB_FAIL(columns_.push_back(c))) {
+      }
+    }
   }
   return ret;
 }

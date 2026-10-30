@@ -103,12 +103,13 @@ typedef struct ObJsonTableDef {
 
 struct ObValuesTableDef {
   ObValuesTableDef() : start_param_idx_(-1), end_param_idx_(-1), column_cnt_(0), row_cnt_(0),
-                       access_type_(ACCESS_EXPR), is_const_(false) {}
+                       access_type_(ACCESS_EXPR), is_const_(false), file_def_(NULL) {}
   enum TableAccessType {
     ACCESS_EXPR = 0,  // expr, one by one
     FOLD_ACCESS_EXPR, // expr, one expr->ObSqlArray
     ACCESS_PARAM,     // by a continuous space of param_store
     ACCESS_OBJ,       // ObObj one by one, used for non-parametric
+    ACCESS_FILE_CURSOR, // file-backed streaming cursor, one ObObj row at a time
   };
   int deep_copy(const ObValuesTableDef &other,
                 ObIRawExprCopier &expr_copier,
@@ -124,9 +125,40 @@ struct ObValuesTableDef {
   TableAccessType access_type_;
   bool is_const_; // values table’s outputs are all params.
   common::ObArray<ObRawExprResType, common::ModulePageAllocator, true> column_types_;
+  // File-table payload (ACCESS_FILE_CURSOR only). Allocated on the stmt
+  // allocator; deep_copy duplicates it.
+  struct ObFileCursorDef *file_def_;
   virtual TO_STRING_KV(K(column_cnt_), K(row_cnt_), K(access_exprs_), K(start_param_idx_),
                        K(end_param_idx_), K(access_objs_), K(column_ndvs_), K(column_nnvs_),
-                       K(access_type_), K(is_const_), K(column_types_));
+                       K(access_type_), K(is_const_), K(column_types_), KP(file_def_));
+};
+
+// Streaming descriptor of one file-table scan. Kept free of engine/file
+// includes on purpose: primitive fields only, so resolver headers stay clean.
+struct ObFileCursorDef
+{
+  int8_t format_ = 0;                  // sql::ObFileSourceFormat as int8
+  common::ObString path_;
+  bool has_header_ = true;
+  int64_t sample_size_ = -1;
+  common::ObString delimiter_;
+  common::ObString quote_;
+  common::ObString escape_;
+  common::ObString nullstr_;
+  common::ObString format_name_;
+  int64_t file_size_ = -1;             // signature captured at resolve time
+  int64_t mtime_sec_ = 0;
+  int64_t mtime_nsec_ = 0;
+  struct ColDef
+  {
+    common::ObString name_;
+    int8_t type_ = 0;                  // sql::ObFileColumnType as int8
+    bool nullable_ = false;
+  };
+  common::ObArray<ColDef, common::ModulePageAllocator, true> columns_;
+  int deep_copy(const ObFileCursorDef &other, common::ObIAllocator &allocator);
+  TO_STRING_KV(K_(format), K_(path), K_(has_header), K_(sample_size), K_(columns),
+               K_(file_size), K_(mtime_sec), K_(mtime_nsec));
 };
 
 struct TableItem

@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+#include "lib/container/ob_array.h"
 #include "lib/string/ob_string.h"
 
 namespace oceanbase
@@ -49,6 +50,17 @@ public:
   // Reads the whole file into memory (files are expected to be small) and
   // decodes every row group column by column.
   static int read_file(const char *buf, int64_t len, ReadResult &result);
+
+  // Decode one row group, converting the columns listed in `needed_cols`
+  // (empty means all) into one text cell per value, column-major order:
+  // cells = [row0_col0, row0_col1, ..., row1_col0, ...]. `group_cnt` receives
+  // the total number of row groups in the file. Returns OB_ITER_END when
+  // group_idx is beyond the last group.
+  static int read_group_as_rows(const char *buf, int64_t len, int64_t group_idx,
+                                int64_t &group_cnt,
+                                const common::ObIArray<bool> &needed_cols,
+                                common::ObIAllocator &allocator,
+                                common::ObArray<common::ObString> &cells);
 };
 
 // Minimal SNAPPY raw-format decompressor (decoder only).

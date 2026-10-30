@@ -25,6 +25,7 @@ SQL_PUBLIC_HEADER_ROOTS = [
     "engine/cmd/ob_vector_refresh_index_executor.h",
     "engine/dml/ob_trigger_handler.h",
     "engine/expr/ob_array_expr_utils.h",
+    "engine/file/ob_file_scan_utils.h",
     "engine/expr/ob_expr_ai/ob_ai_func_utils.h",
     "engine/expr/ob_expr_column_conv.h",
     "engine/expr/ob_expr_lob_utils.h",
