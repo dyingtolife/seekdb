@@ -346,6 +346,7 @@ int ObAiColumnDMLUtils::flush_changes(ObExecContext &exec_ctx,
     // nothing to do
   } else {
     ObSQLSessionInfo *session = exec_ctx.get_my_session();
+    const int64_t saved_nested_count = OB_ISNULL(session) ? 0 : session->get_nested_count();
     SQL_ENG_LOG(ERROR, "ai flush_changes entry", K(ai_ctx.table_id_),
                 "changes", ai_ctx.row_changes_.count(),
                 "ai_cols", table_schema.get_ai_columns().count(),
@@ -418,6 +419,15 @@ int ObAiColumnDMLUtils::flush_changes(ObExecContext &exec_ctx,
           ai_ctx.row_changes_.reset();
         }
       }
+      // The inner SQL above runs on the user's own session, so it shares the
+      // outer statement's session bookkeeping. Restore it: if the inner SQL
+      // path leaves the nested-statement counter changed, the outer
+      // statement's end_stmt() fails with OB_ERR_UNEXPECTED (-4016) even
+      // though every write of the statement already succeeded.
+      SQL_ENG_LOG(ERROR, "ai flush: nested session count", K(ai_ctx.table_id_),
+                  "before", saved_nested_count,
+                  "after", session->get_nested_count());
+      session->set_nested_count(saved_nested_count);
     }
   }
   return ret;

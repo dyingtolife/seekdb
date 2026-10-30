@@ -1,0 +1,18 @@
+ 27691booted seekdb on 2883
+PASS mock-start
+PASS create-model
+PASS create-endpoint
+PASS create-fail-model
+PASS create-fail-endpoint
+PASS step1-create-ai-column
+PASS step2-metadata-rows | 2
+PASS step2-hidden-cols-summary | 3
+PASS step2-hidden-cols-risky | 3
+PASS step2-six-hidden-cols | 6
+PASS step3-insert1-ok
+PASS step3-insert2-ok
+PASS step3-task-enqueued | 4
+PASS step3-hidden-cols-not-in-select-star | ['id', 'content', 'title', 'summary', 'risky']
+PASS step3-row1-tasks-pending | 2
+PASS step3-result-null
+FAIL step4-row1-ready

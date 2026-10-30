@@ -1,0 +1,2 @@
+[2026-10-30 15:03:14.472299] INFO  [SERVER] run2 (ob_ai_column_worker.cpp:356) [29260][AIColWorker][Y0-0000000000000000-0-0] [lt=143] ai column worker loop start
+[2026-10-30 15:03:20.843212] EDIAG [SERVER] run2 (ob_ai_column_worker.cpp:372) [29260][AIColWorker][Y0-0000000000000000-0-0] [lt=48][errcode=-4001] claim ai tasks failed(ret=-4001)

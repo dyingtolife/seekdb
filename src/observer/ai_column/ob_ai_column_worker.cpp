@@ -49,12 +49,18 @@ int ObAiColumnWorker::start_worker()
   int ret = OB_SUCCESS;
   if (!inited_) {
     if (OB_FAIL(create(1, "AIColWorker", 0))) {
-      SERVER_LOG(WARN, "create ai column worker thread failed", K(ret));
-    } else if (OB_FAIL(start())) {
-      SERVER_LOG(WARN, "start ai column worker failed", K(ret));
+      // create() also starts the thread pool; calling start() again here would
+      // spawn a second worker thread for the same queue.
+      SERVER_LOG(ERROR, "create ai column worker thread failed", K(ret));
+    } else if (OB_FAIL(logical_start())) {
+      // ObReentrantThread's constructor leaves stop_ == true and
+      // blocking_run() only enters run2() after logical_start() clears it.
+      // Without this the thread sleeps forever and the task queue is never
+      // consumed (the worker looks "started" but never polls).
+      SERVER_LOG(ERROR, "start ai column worker logical start failed", K(ret));
     } else {
       inited_ = true;
-      SERVER_LOG(INFO, "ai column worker started");
+      SERVER_LOG(ERROR, "ai column worker started", "logical_start", true);
     }
   }
   return ret;
@@ -63,6 +69,7 @@ int ObAiColumnWorker::start_worker()
 void ObAiColumnWorker::stop_worker()
 {
   if (inited_) {
+    logical_stop();
     stop();
     wait();
     inited_ = false;
@@ -270,8 +277,12 @@ int ObAiColumnWorker::process_one_task(ObMySQLProxy &sql_proxy,
       }
     } else {
       ObString result_literal;
+      SERVER_LOG(ERROR, "ai worker: execute task", K(task.task_id_), K(task.column_id_),
+                  K(ai_col->is_embedding_), K(db_name));
       int call_ret = execute_task_group(sql_proxy, task, *table_schema, db_name, *ai_col,
                                         result_literal);
+      SERVER_LOG(ERROR, "ai worker: execute task done", K(task.task_id_), K(call_ret),
+                  "result_len", result_literal.length());
       if (OB_SUCCESS == call_ret) {
         // Publish in one transaction with task cleanup.
         ObMySQLTransaction trans;
@@ -292,27 +303,32 @@ int ObAiColumnWorker::process_one_task(ObMySQLProxy &sql_proxy,
                                                  task.definition_version_);
             int end_ret = trans.end(OB_SUCCESS == pub_ret);
             if (OB_FAIL(end_ret)) {
-              SERVER_LOG(WARN, "end publish txn failed", K(ret));
+              SERVER_LOG(ERROR, "end publish txn failed", K(ret));
             }
+            SERVER_LOG(ERROR, "ai worker: publish done", K(task.task_id_), K(pub_ret),
+                        K(end_ret));
             ret = (OB_SUCCESS == pub_ret) ? OB_SUCCESS : pub_ret;
           }
         }
       } else {
         // Failure path: bounded retry or terminal failure publish.
         ret = OB_SUCCESS;
+        SERVER_LOG(ERROR, "ai worker: fail_task begin", K(task.task_id_),
+                    K(call_ret), K(task.retry_count_), K(ai_col->max_retries_));
         int fail_ret = task_svc.fail_task(sql_proxy, task, ai_col->max_retries_,
                                           500 * 1000);
+        SERVER_LOG(ERROR, "ai worker: fail_task end", K(task.task_id_), K(fail_ret));
         if (OB_FAIL(fail_ret)) {
-          SERVER_LOG(WARN, "fail_task handling failed", K(fail_ret));
+          SERVER_LOG(ERROR, "fail_task handling failed", K(fail_ret));
         }
         if (task.retry_count_ >= ai_col->max_retries_) {
           ObMySQLTransaction trans;
           if (OB_FAIL(trans.start(&sql_proxy))) {
-            SERVER_LOG(WARN, "init fail txn failed", K(ret));
+            SERVER_LOG(ERROR, "init fail txn failed", K(ret));
           } else {
             ObArray<ObAiColumnTaskService::ClaimedTask> group;
             if (OB_FAIL(group.push_back(task))) {
-              SERVER_LOG(WARN, "push fail group failed", K(ret));
+              SERVER_LOG(ERROR, "push fail group failed", K(ret));
             } else {
               int pf_ret = task_svc.publish_failure_group(trans, *table_schema,
                                                           OB_INVALID_ID,
@@ -321,8 +337,10 @@ int ObAiColumnWorker::process_one_task(ObMySQLProxy &sql_proxy,
                                                           task.definition_version_);
               int end_ret = trans.end(OB_SUCCESS == pf_ret);
               if (OB_FAIL(end_ret)) {
-                SERVER_LOG(WARN, "end fail txn failed", K(ret));
+                SERVER_LOG(ERROR, "end fail txn failed", K(ret));
               }
+              SERVER_LOG(ERROR, "ai worker: publish_failure done", K(task.task_id_),
+                          K(pf_ret), K(end_ret));
             }
           }
         }
@@ -351,13 +369,20 @@ void ObAiColumnWorker::run2()
     ObArray<ObAiColumnTaskService::ClaimedTask> tasks;
     bool has_work = false;
     if (OB_FAIL(task_svc.claim_tasks(*GCTX.sql_proxy_, 32, tasks))) {
-      SERVER_LOG(WARN, "claim ai tasks failed", K(ret));
+      SERVER_LOG(ERROR, "claim ai tasks failed", K(ret));
     } else if (tasks.count() > 0) {
       has_work = true;
+      SERVER_LOG(ERROR, "ai worker: claimed tasks", "cnt", tasks.count());
       for (int64_t i = 0; OB_SUCC(ret) && i < tasks.count(); ++i) {
+        // ERROR level: WARN is compiled out in this build, and this marker is
+        // what localises an observer death to a task.
+        SERVER_LOG(ERROR, "ai worker: task begin", K(i), K(tasks.at(i).task_id_),
+                    K(tasks.at(i).column_id_), K(tasks.at(i).retry_count_),
+                    K(tasks.at(i).table_id_));
         int one_ret = process_one_task(*GCTX.sql_proxy_, task_svc, tasks.at(i));
+        SERVER_LOG(ERROR, "ai worker: task end", K(i), K(tasks.at(i).task_id_), K(one_ret));
         if (OB_SUCCESS != one_ret) {
-          SERVER_LOG(WARN, "process one ai task failed", K(one_ret), K(i));
+          SERVER_LOG(ERROR, "process one ai task failed", K(one_ret), K(i));
         }
       }
     }

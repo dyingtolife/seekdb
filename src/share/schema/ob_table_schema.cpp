@@ -5361,8 +5361,32 @@ int ObTableSchema::add_ai_column_schema(const ObAiColumnSchema &ai_column)
   int ret = OB_SUCCESS;
   ObAiColumnSchema tmp;
   common::ObIAllocator *allocator = get_allocator();
+  bool is_duplicate = false;
   if (OB_ISNULL(allocator)) {
     ret = OB_NOT_INIT;
+  } else {
+    // The same AI column can be reported by two paths: the DDL resolver
+    // attaches an entry to the statement's table schema, and the schema
+    // service rebuilds that table schema from __all_ai_column. Keeping both
+    // copies doubles every per-AI-column side effect of one table (duplicate
+    // task rows for one changed data row, duplicate hidden-column updates,
+    // ai_columns_.count() != real AI column count), so the array is a set:
+    // match by column id when it is known, otherwise by column name.
+    for (int64_t i = 0; OB_SUCC(ret) && !is_duplicate && i < ai_columns_.count(); ++i) {
+      const ObAiColumnSchema &existing = ai_columns_.at(i);
+      if (common::OB_INVALID_ID != ai_column.column_id_
+          && common::OB_INVALID_ID != existing.column_id_) {
+        is_duplicate = (existing.column_id_ == ai_column.column_id_);
+      } else if (!ai_column.column_name_.empty() && !existing.column_name_.empty()) {
+        is_duplicate = (0 == existing.column_name_.case_compare(ai_column.column_name_));
+      }
+    }
+  }
+  if (OB_FAIL(ret)) {
+  } else if (is_duplicate) {
+    LOG_ERROR("ai column already registered, duplicate entry dropped",
+              K(ai_column.table_id_), K(ai_column.column_id_), K(ai_column.column_name_),
+              "registered_cnt", ai_columns_.count());
   } else if (OB_FAIL(tmp.assign(*allocator, ai_column))) {
   } else if (OB_FAIL(ai_columns_.push_back(tmp))) {
     tmp.reset();

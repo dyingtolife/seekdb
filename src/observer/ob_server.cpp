@@ -1290,14 +1290,6 @@ int ObServer::start()
     } else {
       FLOG_INFO("success to initialize server runtime");
     }
-    {
-      int ai_worker_ret = OB_SUCCESS;
-      // AI column background worker: best-effort start; failure to start only
-      // disables async AI column generation.
-      if (OB_SUCCESS != (ai_worker_ret = ObAiColumnWorker::get_instance().start_worker())) {
-        LOG_WARN("start ai column worker failed", K(ai_worker_ret));
-      }
-    }
     // AI column background worker: best-effort start; failure to start only
     // disables async AI column generation.
     if (FAILEDx(local_management_service_.start_service())) {
@@ -1385,6 +1377,18 @@ int ObServer::start()
       LOG_ERROR("fail to wait for server metadata readiness", KR(ret));
     } else {
       FLOG_INFO("server metadata is ready");
+    }
+
+    {
+      int ai_worker_ret = OB_SUCCESS;
+      // AI column background worker: best-effort start; failure to start only
+      // disables async AI column generation. It must start AFTER bootstrap:
+      // its first poll reads oceanbase.__all_ai_column_task, and starting it
+      // before the inner tables are created makes every claim fail with
+      // OB_TABLE_NOT_EXIST (-5019) while bootstrap holds the schema service.
+      if (OB_SUCCESS != (ai_worker_ret = ObAiColumnWorker::get_instance().start_worker())) {
+        LOG_ERROR("start ai column worker failed", K(ai_worker_ret));
+      }
     }
 
     if (FAILEDx(net_frame_.start())) {

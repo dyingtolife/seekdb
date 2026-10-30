@@ -987,6 +987,16 @@ int ObSqlTransControl::end_stmt(ObExecContext &exec_ctx, const bool rollback, co
   // add tx id to AuditRecord
   set_audit_tx_id_(session);
 
+  if (OB_FAIL(ret)) {
+    // ERROR level on purpose: statement-tail errors are invisible at WARN in
+    // this build, and an end_stmt failure makes a fully executed DML report an
+    // error to the client. `nested_session_count` separates a set_end_stmt()
+    // failure (unbalanced nested session) from the checks above.
+    LOG_ERROR("end stmt failed", K(ret),
+              "nested_session_count", OB_ISNULL(session) ? -999 : session->get_nested_count(),
+              K(exec_errcode), K(savepoint), K(need_rollback), K(rollback),
+              K(is_plain_select), K(stmt_type));
+  }
   bool print_log = false;
 #ifndef NDEBUG
   print_log = true;

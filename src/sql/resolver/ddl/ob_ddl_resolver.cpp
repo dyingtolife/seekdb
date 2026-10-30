@@ -2817,7 +2817,12 @@ int ObDDLResolver::resolve_ai_column_definition(
       ai_column.table_id_ = table_schema.get_table_id();
       ai_column.column_id_ = column.get_column_id();
       ObIAllocator &allocator = *allocator_;
-      if (OB_FAIL(ai_column.set_model_name(allocator, func_name))) {
+      // Record the user column name: it is the de-duplication key used by
+      // ObTableSchema::add_ai_column_schema() while the column id is not yet
+      // final, and the ALTER path (ObDDLService) matches the entry by name.
+      if (OB_FAIL(ai_column.set_column_name(allocator, column.get_column_name_str()))) {
+        SQL_RESV_LOG(WARN, "failed to store ai column name", K(ret));
+      } else if (OB_FAIL(ai_column.set_model_name(allocator, func_name))) {
         SQL_RESV_LOG(WARN, "failed to store ai model name", K(ret));
       } else if (OB_FAIL(ai_column.set_input_expr(allocator, input_arg_str))) {
         SQL_RESV_LOG(WARN, "failed to store ai input expr", K(ret));
