@@ -129,19 +129,60 @@ int ObAiColumnDMLUtils::init_ctx(const ObTableSchema &table_schema,
       }
     }
   }
+  ai_ctx.inited_ = (OB_SUCCESS == ret);
+  return ret;
+}
+
+int ObAiColumnDMLUtils::ensure_ctx(ObExecContext &exec_ctx,
+                                   uint64_t ref_table_id,
+                                   ObAiColumnDMLCtx &ai_ctx,
+                                   ObIAllocator *alloc_holder)
+{
+  int ret = OB_SUCCESS;
+  if (ai_ctx.inited_) {
+    // already resolved for this statement
+  } else {
+    ObSchemaGetterGuard *guard = NULL;
+    const ObTableSchema *table_schema = NULL;
+    if (OB_ISNULL(exec_ctx.get_sql_ctx())
+        || OB_ISNULL(guard = exec_ctx.get_sql_ctx()->schema_guard_)) {
+      ret = OB_ERR_UNEXPECTED;
+      SQL_ENG_LOG(ERROR, "ai column lazy init: no schema guard", K(ret),
+                  K(ref_table_id));
+    } else if (OB_FAIL(guard->get_table_schema(ref_table_id, table_schema))) {
+      SQL_ENG_LOG(ERROR, "ai column lazy init: get table schema failed", K(ret),
+                  K(ref_table_id));
+    } else if (OB_ISNULL(table_schema)) {
+      ret = OB_ERR_UNEXPECTED;
+      SQL_ENG_LOG(ERROR, "ai column lazy init: table schema missing", K(ret),
+                  K(ref_table_id));
+    } else if (OB_FAIL(init_ctx(*table_schema, ai_ctx, alloc_holder))) {
+      SQL_ENG_LOG(ERROR, "ai column lazy init: init ctx failed", K(ret),
+                  K(ref_table_id));
+    } else {
+      SQL_ENG_LOG(ERROR, "ai column lazy init done", K(ref_table_id),
+                  "has_ai_columns", ai_ctx.has_ai_columns_,
+                  "ai_column_cnt", table_schema->get_ai_column_count(),
+                  "table_name", table_schema->get_table_name_str());
+    }
+  }
   return ret;
 }
 
 int ObAiColumnDMLUtils::build_rowkey_predicate(
     ObEvalCtx &eval_ctx,
-    const ExprFixedArray &key_exprs,
+    const ObIArray<ObExpr *> &key_exprs,
     const ObIArray<ObString> &key_names,
     ObIAllocator &allocator,
     ObString &predicate)
 {
   int ret = OB_SUCCESS;
   ObStringBuffer buf(&allocator);
-  for (int64_t i = 0; OB_SUCC(ret) && i < key_exprs.count(); ++i) {
+  // Set when a rowkey column type cannot be rendered as a SQL literal: the
+  // predicate is then left empty and capture_row skips the row rather than
+  // emitting a corrupt WHERE clause.
+  bool unsupported_type = false;
+  for (int64_t i = 0; OB_SUCC(ret) && !unsupported_type && i < key_exprs.count(); ++i) {
     const char *name_ptr = "";
     int32_t name_len = 0;
     if (i < key_names.count()) {
@@ -187,24 +228,52 @@ int ObAiColumnDMLUtils::build_rowkey_predicate(
         if (OB_SUCC(ret)) {
           ret = buf.append("'");
         }
-      } else {
-        char tmp[128];
-        int64_t pos = datum->to_string(tmp, sizeof(tmp));
-        if (pos <= 0 || OB_FAIL(buf.append(tmp, static_cast<int32_t>(pos)))) {
-          SQL_ENG_LOG(WARN, "print key value failed", K(ret));
-          break;
+      } else if (ob_is_integer_type(expr->datum_meta_.type_)) {
+        // Render the literal from the datum value. ObDatum::to_string() prints
+        // the internal debug form ("{len: 8, flag: 0, ...}"), which produced
+        // unparseable predicates (OB_ERR_PARSE) before this fix.
+        char tmp[64];
+        int64_t tmp_pos = 0;
+        if (ob_is_unsigned_type(expr->datum_meta_.type_)) {
+          ret = databuff_printf(tmp, sizeof(tmp), tmp_pos, "%lu",
+                                static_cast<unsigned long>(datum->get_uint64()));
+        } else {
+          ret = databuff_printf(tmp, sizeof(tmp), tmp_pos, "%ld",
+                                static_cast<long>(datum->get_int()));
         }
+        if (OB_FAIL(ret)) {
+          SQL_ENG_LOG(ERROR, "print key value failed", K(ret), K(i));
+        } else if (OB_FAIL(buf.append(tmp, static_cast<int32_t>(tmp_pos)))) {
+          SQL_ENG_LOG(ERROR, "append key value failed", K(ret));
+        }
+      } else if (ObFloatType == expr->datum_meta_.type_
+                 || ObDoubleType == expr->datum_meta_.type_) {
+        char tmp[64];
+        int64_t tmp_pos = 0;
+        ret = databuff_printf(tmp, sizeof(tmp), tmp_pos, "%.17g",
+                             datum->get_double());
+        if (OB_FAIL(ret)) {
+          SQL_ENG_LOG(ERROR, "print key value failed", K(ret), K(i));
+        } else if (OB_FAIL(buf.append(tmp, static_cast<int32_t>(tmp_pos)))) {
+          SQL_ENG_LOG(ERROR, "append key value failed", K(ret));
+        }
+      } else {
+        unsupported_type = true;
+        SQL_ENG_LOG(ERROR, "ai rowkey column type not renderable, row not tracked",
+                    "obj_type", expr->datum_meta_.type_, K(i));
       }
     }
   }
-  if (OB_SUCC(ret)) {
+  if (OB_SUCC(ret) && !unsupported_type) {
     predicate = ObString(static_cast<int32_t>(buf.length()), buf.ptr());
+  } else if (OB_SUCC(ret)) {
+    predicate.reset();
   }
   return ret;
 }
 
 int ObAiColumnDMLUtils::capture_row(ObEvalCtx &eval_ctx,
-                                    const ExprFixedArray &key_exprs,
+                                    const ObIArray<ObExpr *> &key_exprs,
                                     ObAiColumnDMLCtx &ai_ctx,
                                     bool is_delete,
                                     const ObString *old_rowkey_predicate)
@@ -213,14 +282,28 @@ int ObAiColumnDMLUtils::capture_row(ObEvalCtx &eval_ctx,
   if (!ai_ctx.has_ai_columns_) {
     // fast path: table has no AI columns
   } else {
+    SQL_ENG_LOG(ERROR, "ai capture_row entry", K(ai_ctx.table_id_), K(is_delete),
+                "key_cnt", key_exprs.count(),
+                "rowkey_name_cnt", ai_ctx.rowkey_names_.count(),
+                "changes", ai_ctx.row_changes_.count());
     ObArenaAllocator *alloc_ptr = NULL;
     // use the eval ctx's allocator for the strings (statement lifetime)
     ObIAllocator &alloc = eval_ctx.exec_ctx_.get_allocator();
     ObAiColumnDMLCtx::RowChange change;
     change.is_delete_ = is_delete;
+    bool skip_row = false;
     if (OB_FAIL(build_rowkey_predicate(eval_ctx, key_exprs, ai_ctx.rowkey_names_, alloc,
                                        change.rowkey_predicate_))) {
-      SQL_ENG_LOG(WARN, "build ai rowkey predicate failed", K(ret));
+      SQL_ENG_LOG(ERROR, "build ai rowkey predicate failed", K(ret));
+    } else if (change.rowkey_predicate_.empty()) {
+      // No rowkey expression reached us (a table without a primary key, or a
+      // call site that passed an empty key list). An empty WHERE would turn
+      // the invalidation UPDATE into a full-table write, so the row is left
+      // untracked instead. Never expected for a table with a primary key.
+      skip_row = true;
+      SQL_ENG_LOG(ERROR, "ai capture_row: empty rowkey predicate, row not tracked",
+                  K(ai_ctx.table_id_), K(is_delete), "key_cnt", key_exprs.count(),
+                  "rowkey_name_cnt", ai_ctx.rowkey_names_.count());
     } else if (NULL != old_rowkey_predicate) {
       change.old_rowkey_predicate_ = *old_rowkey_predicate;
     } else {
@@ -238,11 +321,18 @@ int ObAiColumnDMLUtils::capture_row(ObEvalCtx &eval_ctx,
         SQL_ENG_LOG(WARN, "copy request id failed", K(ret));
       }
     }
-    if (OB_SUCC(ret)) {
+    if (OB_SUCC(ret) && !skip_row) {
       if (OB_FAIL(ai_ctx.row_changes_.push_back(change))) {
-        SQL_ENG_LOG(WARN, "append row change failed", K(ret));
+        SQL_ENG_LOG(ERROR, "append row change failed", K(ret));
       }
     }
+    ObString last_pred;
+    if (!ai_ctx.row_changes_.empty()) {
+      last_pred = ai_ctx.row_changes_.at(ai_ctx.row_changes_.count() - 1)
+                      .rowkey_predicate_;
+    }
+    SQL_ENG_LOG(ERROR, "ai capture_row done", K(ai_ctx.table_id_), K(ret),
+                "changes", ai_ctx.row_changes_.count(), K(last_pred));
   }
   return ret;
 }
@@ -256,16 +346,22 @@ int ObAiColumnDMLUtils::flush_changes(ObExecContext &exec_ctx,
     // nothing to do
   } else {
     ObSQLSessionInfo *session = exec_ctx.get_my_session();
+    SQL_ENG_LOG(ERROR, "ai flush_changes entry", K(ai_ctx.table_id_),
+                "changes", ai_ctx.row_changes_.count(),
+                "ai_cols", table_schema.get_ai_columns().count(),
+                "table", table_schema.get_table_name_str());
     if (OB_ISNULL(session)) {
       ret = OB_ERR_UNEXPECTED;
+      SQL_ENG_LOG(ERROR, "ai flush_changes: no session", K(ret));
     } else {
       // Session inner connection: joins the user's current transaction, so
       // task rows and hidden-column updates commit/rollback with the data.
       common::sqlclient::ObISQLConnectionGuard conn_guard;
       if (OB_FAIL(query::ObInnerSQLConnectionAccess::create_connection_with_external_session(
               session, conn_guard))) {
-        SQL_ENG_LOG(WARN, "create session inner connection failed", K(ret));
+        SQL_ENG_LOG(ERROR, "create session inner connection failed", K(ret));
       } else {
+        SQL_ENG_LOG(ERROR, "ai flush: session inner connection ready", K(ret));
         ObArenaAllocator alloc("AiColFlush");
         ObAiColumnTaskService task_svc(alloc);
         ObAiInnerConnClient client_wrapper(conn_guard.get_ptr());
@@ -275,7 +371,8 @@ int ObAiColumnDMLUtils::flush_changes(ObExecContext &exec_ctx,
             // DELETE: remove pending tasks for the old rowkey.
             if (OB_FAIL(task_svc.remove_tasks_for_row(client_wrapper, ai_ctx.table_id_,
                                                       change.rowkey_predicate_))) {
-              SQL_ENG_LOG(WARN, "remove tasks on delete failed", K(ret));
+              SQL_ENG_LOG(ERROR, "ai flush: remove tasks on delete failed", K(ret),
+                          K(ai_ctx.table_id_), "pred", change.rowkey_predicate_);
             }
           } else if (!change.old_rowkey_predicate_.empty()) {
             // PK update: rowkey_predicate_ is the OLD key,
@@ -283,16 +380,18 @@ int ObAiColumnDMLUtils::flush_changes(ObExecContext &exec_ctx,
             // then invalidate+enqueue for the new key.
             if (OB_FAIL(task_svc.remove_tasks_for_row(client_wrapper, ai_ctx.table_id_,
                                                       change.rowkey_predicate_))) {
-              SQL_ENG_LOG(WARN, "remove old key tasks failed", K(ret));
+              SQL_ENG_LOG(ERROR, "ai flush: remove old key tasks failed", K(ret));
             } else if (OB_FAIL(task_svc.invalidate_row(client_wrapper, table_schema,
                                                        change.old_rowkey_predicate_,
                                                        change.request_id_))) {
-              SQL_ENG_LOG(WARN, "invalidate new key failed", K(ret));
+              SQL_ENG_LOG(ERROR, "ai flush: invalidate new key failed", K(ret),
+                          "pred", change.old_rowkey_predicate_);
             } else if (OB_FAIL(task_svc.enqueue_tasks(client_wrapper, table_schema,
                                                        OB_INVALID_ID,
                                                        change.old_rowkey_predicate_,
                                                        change.request_id_))) {
-              SQL_ENG_LOG(WARN, "enqueue new key tasks failed", K(ret));
+              SQL_ENG_LOG(ERROR, "ai flush: enqueue new key tasks failed", K(ret),
+                          "pred", change.old_rowkey_predicate_);
             }
           } else {
             // INSERT or dependency UPDATE: invalidate the hidden columns
@@ -300,12 +399,17 @@ int ObAiColumnDMLUtils::flush_changes(ObExecContext &exec_ctx,
             if (OB_FAIL(task_svc.invalidate_row(client_wrapper, table_schema,
                                                 change.rowkey_predicate_,
                                                 change.request_id_))) {
-              SQL_ENG_LOG(WARN, "invalidate row failed", K(ret));
+              SQL_ENG_LOG(ERROR, "ai flush: invalidate row failed", K(ret),
+                          K(ai_ctx.table_id_), "pred", change.rowkey_predicate_);
             } else if (OB_FAIL(task_svc.enqueue_tasks(client_wrapper, table_schema,
                                                        OB_INVALID_ID,
                                                        change.rowkey_predicate_,
                                                        change.request_id_))) {
-              SQL_ENG_LOG(WARN, "enqueue tasks failed", K(ret));
+              SQL_ENG_LOG(ERROR, "ai flush: enqueue tasks failed", K(ret),
+                          K(ai_ctx.table_id_), "pred", change.rowkey_predicate_);
+            } else {
+              SQL_ENG_LOG(ERROR, "ai flush: row retasked", K(ai_ctx.table_id_),
+                          "pred", change.rowkey_predicate_);
             }
           }
         }

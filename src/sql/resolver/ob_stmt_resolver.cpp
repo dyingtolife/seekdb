@@ -204,6 +204,34 @@ int ObStmtResolver::normalize_table_or_database_names(ObString &name)
   return ret;
 }
 
+namespace
+{
+// True when `column_id` is one of the hidden bookkeeping columns an AI column
+// maintains (`<ai_col>_state`, `_request`, `_result_spec`). The AI column
+// runtime updates them through internal SQL, so the resolver must not report
+// them as unknown just because the columns are hidden. Keeping the check here
+// (rather than on ObTableSchema) confines the change to the resolver.
+bool is_ai_aux_column(const ObSchemaChecker *schema_checker,
+                      const uint64_t table_id,
+                      const uint64_t column_id)
+{
+  bool found = false;
+  const ObTableSchema *table_schema = NULL;
+  if (NULL != schema_checker
+      && OB_SUCCESS == schema_checker->get_table_schema(table_id, table_schema)
+      && NULL != table_schema) {
+    const ObIArray<ObAiColumnSchema> &ai_columns = table_schema->get_ai_columns();
+    for (int64_t i = 0; !found && i < ai_columns.count(); ++i) {
+      const ObAiColumnSchema &ai_col = ai_columns.at(i);
+      found = (column_id == ai_col.state_column_id_
+               || column_id == ai_col.request_column_id_
+               || column_id == ai_col.result_spec_column_id_);
+    }
+  }
+  return found;
+}
+}  // namespace
+
 int ObStmtResolver::get_column_schema(const uint64_t table_id,
     const ObString &column_name,
     const share::schema::ObColumnSchemaV2 *&column_schema,
@@ -220,7 +248,9 @@ int ObStmtResolver::get_column_schema(const uint64_t table_id,
     // Generated columns added by function-based indexes are hidden but may
     // still be selected through this path.
     if (OB_FAIL(schema_checker_->get_column_schema( table_id, column_name, column_schema, true, is_link))) {
-    } else if (!hidden && column_schema->is_hidden() && !column_schema->is_generated_column()) {
+    } else if (!hidden && column_schema->is_hidden() && !column_schema->is_generated_column()
+               && !is_ai_aux_column(schema_checker_, table_id,
+                                    column_schema->get_column_id())) {
       ret = OB_ERR_BAD_FIELD_ERROR;
       LOG_INFO("do not get hidden column", K(table_id), K(column_name), K(ret));
     }

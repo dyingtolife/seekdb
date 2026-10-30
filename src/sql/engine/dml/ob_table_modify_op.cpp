@@ -647,21 +647,41 @@ int ObTableModifyOp::inner_open()
   // AI column linkage init: locate the data table schema once. Best effort:
   // failure here only disables AI column linkage for this statement.
   if (OB_SUCCESS == ret) {
-    uint64_t data_table_id = common::OB_INVALID_ID;
     const ObDMLBaseCtDef *dml_ctdef = nullptr;
-    if (OB_SUCCESS != MY_SPEC.get_single_dml_ctdef(dml_ctdef) || OB_ISNULL(dml_ctdef)) {
-      // multi-table or unexpected: skip
+    int spec_ret = MY_SPEC.get_single_dml_ctdef(dml_ctdef);
+    if (OB_SUCCESS != spec_ret || OB_ISNULL(dml_ctdef)) {
+      // Plans with more than one DML ctdef cannot answer this: the DML row
+      // hooks resolve the AI ctx lazily from the primary ctdef instead.
+      SQL_ENG_LOG(ERROR, "ai column init: no single dml ctdef, deferred", K(spec_ret));
     } else {
-      data_table_id = dml_ctdef->das_base_ctdef_.table_id_;
       ObSchemaGetterGuard *guard = ctx_.get_sql_ctx()->schema_guard_;
       const ObTableSchema *table_schema = nullptr;
       int ai_ret = OB_SUCCESS;
+      // `index_tid_` is the ref (schema) table id, i.e. the id every other DML
+      // schema lookup uses (see ObDMLService::process_insert_row); the base
+      // ctdef's `table_id_` can carry a partition/location id that has no
+      // schema entry at all.
+      uint64_t data_table_id = dml_ctdef->das_base_ctdef_.index_tid_;
       if (OB_SUCCESS != (ai_ret = guard->get_table_schema(data_table_id, table_schema))
           || OB_ISNULL(table_schema)) {
-        // best effort: no schema, no AI linkage
+        // some local plans keep the schema id in table_id_ instead: try it once
+        data_table_id = dml_ctdef->das_base_ctdef_.table_id_;
+        table_schema = nullptr;
+        ai_ret = guard->get_table_schema(data_table_id, table_schema);
+      }
+      if (OB_SUCCESS != ai_ret || OB_ISNULL(table_schema)) {
+        SQL_ENG_LOG(ERROR, "ai column init: no table schema for dml", K(ai_ret),
+                    K(data_table_id),
+                    "index_tid", dml_ctdef->das_base_ctdef_.index_tid_,
+                    "table_id", dml_ctdef->das_base_ctdef_.table_id_);
       } else if (OB_SUCCESS != (ai_ret = ObAiColumnDMLUtils::init_ctx(
               *table_schema, ai_dml_ctx_, &ctx_.get_allocator()))) {
-        SQL_ENG_LOG(WARN, "ai column init ctx failed", K(ai_ret));
+        SQL_ENG_LOG(ERROR, "ai column init ctx failed", K(ai_ret), K(data_table_id));
+      } else {
+        SQL_ENG_LOG(ERROR, "ai column init ok", K(data_table_id),
+                    "has_ai_columns", ai_dml_ctx_.has_ai_columns_,
+                    "ai_column_cnt", table_schema->get_ai_column_count(),
+                    "table_name", table_schema->get_table_name_str());
       }
     }
   }
@@ -843,11 +863,16 @@ int ObTableModifyOp::inner_close()
     const ObTableSchema *table_schema = nullptr;
     if (OB_SUCCESS != (ai_ret = guard->get_table_schema(ai_table_id, table_schema))
         || OB_ISNULL(table_schema)) {
-      // schema unavailable: skip AI flush silently
+      SQL_ENG_LOG(ERROR, "ai column flush: no table schema", K(ai_ret), K(ai_table_id),
+                  "changes", ai_dml_ctx_.row_changes_.count());
     } else if (OB_SUCCESS != (ai_ret = ObAiColumnDMLUtils::flush_changes(
             ctx_, *table_schema, ai_dml_ctx_))) {
-      SQL_ENG_LOG(WARN, "ai column flush failed", K(ai_ret), K(ai_table_id));
+      SQL_ENG_LOG(ERROR, "ai column flush failed", K(ai_ret), K(ai_table_id),
+                  "changes", ai_dml_ctx_.row_changes_.count());
     }
+  } else if (!ai_dml_ctx_.is_empty()) {
+    SQL_ENG_LOG(ERROR, "ai column flush skipped: invalid table id", K(ai_table_id),
+                "changes", ai_dml_ctx_.row_changes_.count());
   }
   return ret;
 }

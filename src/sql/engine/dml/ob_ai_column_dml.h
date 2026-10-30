@@ -40,6 +40,10 @@ struct ObAiColumnDMLCtx
   };
 
   bool has_ai_columns_;
+  // True once init_ctx() resolved the table schema for this statement. The
+  // operator-level init bails out for plans with several DML ctdefs, so the
+  // DML row hooks complete the init lazily through ensure_ctx().
+  bool inited_;
   uint64_t table_id_;                    // data table id (user table)
   int64_t request_seq_;                  // per-statement sequence for request ids
   common::ObSEArray<RowChange, 8> row_changes_;
@@ -51,11 +55,14 @@ struct ObAiColumnDMLCtx
   // executor rejects).
   common::ObSEArray<uint64_t, 4> assigned_ai_result_cols_;
 
-  ObAiColumnDMLCtx() : has_ai_columns_(false), table_id_(common::OB_INVALID_ID), request_seq_(0) {}
+  ObAiColumnDMLCtx()
+    : has_ai_columns_(false), inited_(false), table_id_(common::OB_INVALID_ID),
+      request_seq_(0) {}
 
   void reset()
   {
     has_ai_columns_ = false;
+    inited_ = false;
     table_id_ = common::OB_INVALID_ID;
     request_seq_ = 0;
     row_changes_.reset();
@@ -77,10 +84,18 @@ public:
                       ObAiColumnDMLCtx &ai_ctx,
                       common::ObIAllocator *alloc_holder);
 
+  // Lazily initialize the ctx from the DML row hook when the operator-level
+  // init could not resolve a single ctdef (plans with several DML ctdefs).
+  // Idempotent: a no-op once the ctx is initialized for this statement.
+  static int ensure_ctx(ObExecContext &exec_ctx,
+                        uint64_t ref_table_id,
+                        ObAiColumnDMLCtx &ai_ctx,
+                        common::ObIAllocator *alloc_holder);
+
   // Capture one changed row: builds the rowkey predicate from the evaluated
   // row datums, generates the change request id and appends a RowChange.
   static int capture_row(ObEvalCtx &eval_ctx,
-                         const ExprFixedArray &key_exprs,
+                         const common::ObIArray<ObExpr *> &key_exprs,
                          ObAiColumnDMLCtx &ai_ctx,
                          bool is_delete,
                          const common::ObString *old_rowkey_predicate);
@@ -127,7 +142,7 @@ public:
   // Public wrapper so the update hook can build the NEW key predicate.
   static int build_rowkey_predicate_from_exprs(
       ObEvalCtx &eval_ctx,
-      const ExprFixedArray &key_exprs,
+      const common::ObIArray<ObExpr *> &key_exprs,
       const common::ObIArray<common::ObString> &key_names,
       common::ObIAllocator &allocator,
       common::ObString &predicate)
@@ -138,7 +153,7 @@ public:
 private:
   static int build_rowkey_predicate(
       ObEvalCtx &eval_ctx,
-      const ExprFixedArray &key_exprs,
+      const common::ObIArray<ObExpr *> &key_exprs,
       const common::ObIArray<common::ObString> &key_names,
       common::ObIAllocator &allocator,
       common::ObString &predicate);

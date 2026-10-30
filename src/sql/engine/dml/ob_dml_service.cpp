@@ -633,11 +633,22 @@ int ObDMLService::process_insert_row(const ObInsCtDef &ins_ctdef,
     }
     // AI column linkage: capture the inserted row (rowkey = leading rowkey
     // exprs of the new row). Capture after all row checks succeeded.
+    // Multi-ctdef plans skip the operator-level init, so finish it here from
+    // the primary ctdef's ref (schema) table id.
+    if (OB_SUCC(ret) && !is_skipped && !dml_op.ai_dml_ctx_.inited_) {
+      int ai_init_ret = ObAiColumnDMLUtils::ensure_ctx(
+          dml_op.get_exec_ctx(), ins_ctdef.das_base_ctdef_.index_tid_,
+          dml_op.ai_dml_ctx_, &dml_op.get_exec_ctx().get_allocator());
+      if (OB_SUCCESS != ai_init_ret) {
+        SQL_ENG_LOG(ERROR, "ai column lazy init failed", K(ai_init_ret),
+                    "ref_table_id", ins_ctdef.das_base_ctdef_.index_tid_);
+      }
+    }
     if (OB_SUCC(ret) && !is_skipped) {
       if (dml_op.ai_dml_ctx_.has_ai_columns_
           && ins_ctdef.das_ctdef_.rowkey_cnt_ > 0
           && ins_ctdef.das_ctdef_.rowkey_cnt_ <= ins_ctdef.new_row_.count()) {
-        ExprFixedArray key_row;
+        ObSEArray<ObExpr *, 4> key_row;
         for (int64_t ki = 0; ki < ins_ctdef.das_ctdef_.rowkey_cnt_; ++ki) {
           if (OB_SUCCESS != key_row.push_back(ins_ctdef.new_row_.at(ki))) {
             break;
@@ -743,10 +754,19 @@ int ObDMLService::process_delete_row(const ObDelCtDef &del_ctdef,
       }
     }
 
+    if (OB_SUCC(ret) && !is_skipped && !dml_op.ai_dml_ctx_.inited_) {
+      int ai_init_ret = ObAiColumnDMLUtils::ensure_ctx(
+          dml_op.get_exec_ctx(), del_ctdef.das_base_ctdef_.index_tid_,
+          dml_op.ai_dml_ctx_, &dml_op.get_exec_ctx().get_allocator());
+      if (OB_SUCCESS != ai_init_ret) {
+        SQL_ENG_LOG(ERROR, "ai column lazy init failed", K(ai_init_ret),
+                    "ref_table_id", del_ctdef.das_base_ctdef_.index_tid_);
+      }
+    }
     if (OB_SUCC(ret) && !is_skipped && dml_op.ai_dml_ctx_.has_ai_columns_
         && del_ctdef.das_ctdef_.rowkey_cnt_ > 0
         && del_ctdef.das_ctdef_.rowkey_cnt_ <= del_ctdef.old_row_.count()) {
-      ExprFixedArray key_row;
+      ObSEArray<ObExpr *, 4> key_row;
       for (int64_t ki = 0; ki < del_ctdef.das_ctdef_.rowkey_cnt_; ++ki) {
         if (OB_SUCCESS != key_row.push_back(del_ctdef.old_row_.at(ki))) {
           break;
@@ -867,6 +887,16 @@ int ObDMLService::process_update_row(const ObUpdCtDef &upd_ctdef,
   // trigger regeneration. Direct assignment to AI result columns is rejected
   // by the resolver before execution.
   if (OB_SUCC(ret) && !is_skipped && upd_rtdef.is_row_changed_
+      && !dml_op.ai_dml_ctx_.inited_) {
+    int ai_init_ret = ObAiColumnDMLUtils::ensure_ctx(
+        dml_op.get_exec_ctx(), upd_ctdef.das_base_ctdef_.index_tid_,
+        dml_op.ai_dml_ctx_, &dml_op.get_exec_ctx().get_allocator());
+    if (OB_SUCCESS != ai_init_ret) {
+      SQL_ENG_LOG(ERROR, "ai column lazy init failed", K(ai_init_ret),
+                  "ref_table_id", upd_ctdef.das_base_ctdef_.index_tid_);
+    }
+  }
+  if (OB_SUCC(ret) && !is_skipped && upd_rtdef.is_row_changed_
       && dml_op.ai_dml_ctx_.has_ai_columns_) {
     bool touches_dependency = false;
     for (int64_t a = 0; !touches_dependency && a < upd_ctdef.assign_columns_.count(); ++a) {
@@ -901,7 +931,7 @@ int ObDMLService::process_update_row(const ObUpdCtDef &upd_ctdef,
     if (touches_dependency || touches_rowkey) {
       int64_t rowkey_cnt = upd_ctdef.dupd_ctdef_.rowkey_cnt_;
       if (rowkey_cnt > 0 && rowkey_cnt <= upd_ctdef.old_row_.count()) {
-        ExprFixedArray key_row;
+        ObSEArray<ObExpr *, 4> key_row;
         for (int64_t ki = 0; ki < rowkey_cnt; ++ki) {
           if (OB_SUCCESS != key_row.push_back(upd_ctdef.old_row_.at(ki))) {
             break;
@@ -910,7 +940,7 @@ int ObDMLService::process_update_row(const ObUpdCtDef &upd_ctdef,
         int ai_ret = OB_SUCCESS;
         if (touches_rowkey) {
           // Build the NEW-key predicate from the new row when the key moved.
-          ExprFixedArray new_key_row;
+          ObSEArray<ObExpr *, 4> new_key_row;
           for (int64_t ki = 0; ki < rowkey_cnt && ki < upd_ctdef.new_row_.count(); ++ki) {
             if (OB_SUCCESS != new_key_row.push_back(upd_ctdef.new_row_.at(ki))) {
               break;
