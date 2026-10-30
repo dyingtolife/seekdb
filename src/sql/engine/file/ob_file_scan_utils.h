@@ -306,14 +306,21 @@ public:
   void init(int64_t col_cnt);
   int feed_row(const ObFileRow &row, const ObFileParamSpec &params);
   int finalize(common::ObIAllocator &allocator, ObFileSchema &schema);
+  // JSONL has no header: the column list is the union of the object fields in
+  // first-seen order, so it can only be built while streaming the whole input.
+  static int infer_jsonl_schema(IFileRowCursor &cursor,
+                                const ObFileParamSpec &params,
+                                common::ObIAllocator &allocator,
+                                ObFileSchema &schema,
+                                int64_t &row_cnt);
+  static ObFileColumnType classify(const common::ObString &cell);
+  static ObFileColumnType widen(ObFileColumnType cur, ObFileColumnType cand);
 private:
   static bool is_bool_text(const common::ObString &s);
   static bool is_bigint_text(const common::ObString &s);
   static bool is_double_text(const common::ObString &s);
   static bool is_date_text(const common::ObString &s);
   static bool is_datetime_text(const common::ObString &s);
-  static ObFileColumnType classify(const common::ObString &cell);
-  static ObFileColumnType widen(ObFileColumnType cur, ObFileColumnType cand);
   common::ObArray<ObFileColumnType> types_;
   common::ObArray<bool> nullables_;
   int64_t col_cnt_ = 0;

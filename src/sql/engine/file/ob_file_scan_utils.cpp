@@ -1463,6 +1463,80 @@ int ObFileSchemaInferer::feed_row(const ObFileRow &row, const ObFileParamSpec &p
   return ret;
 }
 
+// JSONL: field union in first-seen order with the same widening rules as CSV.
+int ObFileSchemaInferer::infer_jsonl_schema(IFileRowCursor &cursor,
+                                            const ObFileParamSpec &params,
+                                            common::ObIAllocator &allocator,
+                                            ObFileSchema &schema,
+                                            int64_t &row_cnt)
+{
+  int ret = OB_SUCCESS;
+  row_cnt = 0;
+  common::ObArray<common::ObString> keys;
+  common::ObArray<ObFileColumnType> types;
+  common::ObArray<bool> nullables;
+  ObFileRow row;
+  while (OB_SUCC(ret)) {
+    int gr = cursor.next_row(row);
+    if (OB_ITER_END == gr) {
+      break;
+    } else if (OB_INVALID_DATA == gr) {
+      ret = OB_INVALID_DATA;
+    } else if (OB_SUCCESS != gr) {
+      ret = gr;
+    } else {
+      ++row_cnt;
+      // JSONL rows carry [key, value, key, value, ...] pairs
+      for (int64_t i = 0; OB_SUCC(ret) && i + 1 < row.cells_.count(); i += 2) {
+        const common::ObString &key = row.cells_.at(i);
+        const common::ObString &val = row.cells_.at(i + 1);
+        const bool is_null = val.empty()
+            || (!params.nullstr_.empty() && val.length() == params.nullstr_.length()
+                && val.case_compare(params.nullstr_) == 0);
+        int64_t idx = -1;
+        for (int64_t k = 0; k < keys.count(); ++k) {
+          if (keys.at(k).case_compare(key) == 0) { idx = k; break; }
+        }
+        if (idx < 0) {
+          common::ObString key_copy;
+          if (OB_UNLIKELY(key.empty())) {
+            ret = OB_INVALID_DATA;
+          } else {
+            char *buf = static_cast<char *>(allocator.alloc(key.length()));
+            if (OB_ISNULL(buf)) {
+              ret = OB_ALLOCATE_MEMORY_FAILED;
+            } else {
+              MEMCPY(buf, key.ptr(), key.length());
+              key_copy.assign_ptr(buf, key.length());
+            }
+          }
+          if (OB_SUCC(ret)) {
+            if (OB_FAIL(keys.push_back(key_copy))
+                || OB_FAIL(types.push_back(is_null ? ObFileColumnType::NIL : classify(val)))
+                || OB_FAIL(nullables.push_back(is_null))) {
+            }
+          }
+        } else if (is_null) {
+          nullables.at(idx) = true;
+        } else if (ObFileColumnType::VARCHAR != types.at(idx)) {
+          types.at(idx) = widen(types.at(idx), classify(val));
+        }
+      }
+    }
+  }
+  if (OB_FAIL(ret)) {
+  } else {
+    for (int64_t k = 0; OB_SUCC(ret) && k < keys.count(); ++k) {
+      ObFileSchema::Column col;
+      col.name_ = keys.at(k);
+      col.type_ = types.at(k);
+      col.nullable_ = nullables.at(k);
+      if (OB_FAIL(schema.columns_.push_back(col))) {}
+    }
+  }
+  return ret;
+}
+
 int ObFileSchemaInferer::finalize(common::ObIAllocator &allocator, ObFileSchema &schema)
 {
   int ret = OB_SUCCESS;

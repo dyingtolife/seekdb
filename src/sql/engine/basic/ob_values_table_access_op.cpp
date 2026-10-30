@@ -113,10 +113,13 @@ int ObValuesTableAccessOp::open_file_cursor(bool &identity_ok)
   params.escape_ = MY_SPEC.file_escape_;
   params.nullstr_ = MY_SPEC.file_nullstr_;
   params.format_ = MY_SPEC.file_format_name_;
-  // change detection: the file must still look like it did at resolve time
+  // change detection: the file must still look like it did at resolve time. glob() takes
+  // a pattern instead of a file, so there is nothing to stat for it.
+  const bool check_identity = (ObFileSourceFormat::GLOB
+                               != static_cast<ObFileSourceFormat>(MY_SPEC.file_format_));
   ObFileSignature now_sig;
   const ObString path = MY_SPEC.file_path_;
-  if (OB_FAIL(stat_file_signature(path, now_sig))) {
+  if (check_identity && OB_FAIL(stat_file_signature(path, now_sig))) {
     ret = OB_INVALID_ARGUMENT;
     LOG_USER_ERROR(OB_INVALID_ARGUMENT, "file disappeared or became unreadable");
   } else {
@@ -124,7 +127,7 @@ int ObValuesTableAccessOp::open_file_cursor(bool &identity_ok)
     resolve_sig.size_ = MY_SPEC.file_sig_size_;
     resolve_sig.mtime_sec_ = MY_SPEC.file_sig_mtime_sec_;
     resolve_sig.mtime_nsec_ = MY_SPEC.file_sig_mtime_nsec_;
-    if (resolve_sig.is_valid() && now_sig != resolve_sig) {
+    if (check_identity && resolve_sig.is_valid() && now_sig != resolve_sig) {
       ret = OB_INVALID_ARGUMENT;
       LOG_USER_ERROR(OB_INVALID_ARGUMENT, "file changed between resolve and execution");
     }
@@ -138,7 +141,7 @@ int ObValuesTableAccessOp::open_file_cursor(bool &identity_ok)
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(make_file_row_cursor(
                  static_cast<ObFileSourceFormat>(MY_SPEC.file_format_),
-                 path, params, needed, file_alloc_, file_cursor_))) {
+                 path, params, needed, ctx_.get_allocator(), file_cursor_))) {
     LOG_USER_ERROR(OB_INVALID_ARGUMENT, "cannot open file");
   } else if (OB_ISNULL(file_cursor_)) {
     ret = OB_ERR_UNEXPECTED;
@@ -209,8 +212,9 @@ int ObValuesTableAccessOp::refill_file_batch()
 void ObValuesTableAccessOp::close_file_cursor()
 {
   if (NULL != file_cursor_) {
+    // the cursor object itself lives in the execution-context allocator (it must not be
+    // reclaimed by file_alloc_.reuse() at the start of every refill), so only close it
     file_cursor_->close();
-    file_alloc_.free(file_cursor_);
     file_cursor_ = NULL;
   }
   file_batch_.reset();
@@ -225,10 +229,12 @@ int ObValuesTableAccessOp::inner_rescan()
   } else if (ObValuesTableDef::ACCESS_FILE_CURSOR == MY_SPEC.access_type_) {
     // identity check: the file must be unchanged since open; then restart
     ObFileSignature now_sig;
-    if (OB_FAIL(stat_file_signature(MY_SPEC.file_path_, now_sig))) {
+    const bool check_identity = (ObFileSourceFormat::GLOB
+                                 != static_cast<ObFileSourceFormat>(MY_SPEC.file_format_));
+    if (check_identity && OB_FAIL(stat_file_signature(MY_SPEC.file_path_, now_sig))) {
       ret = OB_INVALID_ARGUMENT;
       LOG_USER_ERROR(OB_INVALID_ARGUMENT, "file disappeared on rescan");
-    } else if (now_sig != file_open_sig_) {
+    } else if (check_identity && now_sig != file_open_sig_) {
       ret = OB_INVALID_ARGUMENT;
       LOG_USER_ERROR(OB_INVALID_ARGUMENT, "file changed during execution");
     } else {

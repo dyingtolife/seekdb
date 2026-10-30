@@ -1730,6 +1730,21 @@ int ObStaticEngineCG::generate_spec(ObLogValuesTableAccess &op,
               spec.file_col_nullables_.at(c) = fd->columns_.at(c).nullable_;
             }
           }
+          // ObValuesTableAccessOp writes one datum per table column through
+          // spec.column_exprs_, so the file-backed path needs them generated as well.
+          for (int64_t c = 0; OB_SUCC(ret) && c < op.get_column_exprs().count(); c++) {
+            ObColumnRefRawExpr *col_expr = op.get_column_exprs().at(c);
+            ObExpr *expr = NULL;
+            if (OB_ISNULL(col_expr)) {
+              ret = OB_ERR_UNEXPECTED;
+            } else if (OB_FAIL(mark_expr_self_produced(col_expr))) {
+            } else if (OB_FAIL(generate_rt_expr(*col_expr, expr))) {
+            } else if (OB_ISNULL(expr)) {
+              ret = OB_ERR_UNEXPECTED;
+            } else {
+              spec.column_exprs_.at(c) = expr;
+            }
+          }
         }
       }
     } else {

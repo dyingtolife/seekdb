@@ -2108,6 +2108,23 @@ int ObSqlParameterization::mark_tree(ParseNode *tree ,SqlInfo &sql_info)
       if (OB_FAIL(mark_args(tree, mark_arr, ARGS_NUMBER_FIVE, sql_info))) {
       }
     }
+  } else if (T_FILE_TABLE_EXPRESSION == tree->type_) {
+    // A file-table function is resolved eagerly: resolve_file_table_item() opens the
+    // file and infers its schema during resolution, so it needs the real literal text of
+    // the path and of the named options (`header = true`, `sample_size = -1`, ...).
+    // Parameterising them would turn them into T_QUESTIONMARK placeholders whose values
+    // only exist at execution time, which is too late for schema inference.
+    // Same treatment as USERENV()/json_extract(): keep the literals in the tree.
+    if (3 != tree->num_child_ && 4 != tree->num_child_) {
+      ret = OB_INVALID_ARGUMENT;
+      SQL_PC_LOG(WARN, "invalid file table expr argument", K(ret), K(tree->num_child_));
+    } else {
+      const int64_t ARGS_NUMBER_FOUR = 4;
+      // [func, path, params?, alias]: only path and option list must stay literal
+      bool mark_arr[ARGS_NUMBER_FOUR] = {0, 1, 1, 0};
+      if (OB_FAIL(mark_args(tree, mark_arr, tree->num_child_, sql_info))) {
+      }
+    }
   } else if (T_FUN_SYS_TREAT == tree->type_) {
     if (2 != tree->num_child_) {
       ret = OB_INVALID_ARGUMENT;

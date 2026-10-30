@@ -13038,6 +13038,26 @@ int ObDMLResolver::canonicalize_local_path(const ObString &path, ObString &canon
   return ret;
 }
 
+// Deep-copy one cursor cell into the statement allocator: cursor cells are views
+// into a sliding window (or a temporary line buffer) and die on the next next_row().
+static int copy_file_cell(const ObString &src, ObIAllocator &allocator, ObString &dst)
+{
+  int ret = OB_SUCCESS;
+  dst.reset();
+  if (src.empty()) {
+    // leave dst empty
+  } else {
+    char *buf = static_cast<char *>(allocator.alloc(src.length()));
+    if (OB_ISNULL(buf)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else {
+      MEMCPY(buf, src.ptr(), src.length());
+      dst.assign_ptr(buf, src.length());
+    }
+  }
+  return ret;
+}
+
 // Streaming schema discovery + inference for one file table. The full input
 // may be scanned (per the competition spec), but rows stream through the
 // inferer and are never retained; the cursor is closed before returning.
@@ -13058,28 +13078,26 @@ int ObDMLResolver::infer_file_schema_streaming(ObFileSourceFormat fmt,
     LOG_USER_ERROR(OB_INVALID_ARGUMENT, "cannot read file");
   } else {
     // column discovery
-    if (ObFileSourceFormat::CSV == fmt && params.has_header_) {
-      ObFileRow header_row;
-      int gr = cursor->next_row(header_row);
-      if (OB_ITER_END == gr) {
-        // empty file: no columns
-      } else if (OB_SUCCESS != gr) {
-        ret = OB_INVALID_DATA;
-        LOG_USER_ERROR(OB_INVALID_DATA, "bad csv header row, at line %ld", cursor->current_line());
-      } else {
-        for (int64_t i = 0; OB_SUCC(ret) && i < header_row.cells_.count(); ++i) {
-          ObString name = header_row.cells_.at(i);
-          ObSqlString tmp;
-          if (name.empty()) {
+    ObFileRow first_row;     // first data row: inference input when there is no header
+    bool has_first_row = false;
+    if (ObFileSourceFormat::CSV == fmt) {
+      ObCsvFileCursor *csv_cursor = static_cast<ObCsvFileCursor *>(cursor);
+      ObFileRow head_row;
+      int gr = OB_SUCCESS;
+      if (params.has_header_) {
+        // ObCsvFileCursor::open() already consumed the header record (it is exposed via
+        // header()), so next_row() would hand back the first *data* row here. Copy the
+        // names out of the cursor's allocator to be independent of its lifetime.
+        for (int64_t i = 0; OB_SUCC(ret) && i < csv_cursor->header().count(); ++i) {
+          const ObString &raw_name = csv_cursor->header().at(i);
+          ObString name;
+          if (!raw_name.empty()) {
+            if (OB_FAIL(copy_file_cell(raw_name, allocator, name))) {
+            }
+          } else {
+            ObSqlString tmp;
             if (OB_FAIL(tmp.append_fmt("column_%ld", i + 1))) {
-            } else {
-              char *nb = static_cast<char *>(allocator.alloc(tmp.length()));
-              if (OB_ISNULL(nb)) {
-                ret = OB_ALLOCATE_MEMORY_FAILED;
-              } else {
-                MEMCPY(nb, tmp.ptr(), tmp.length());
-                name.assign_ptr(nb, static_cast<int32_t>(tmp.length()));
-              }
+            } else if (OB_FAIL(copy_file_cell(tmp.string(), allocator, name))) {
             }
           }
           if (OB_SUCC(ret)) {
@@ -13088,6 +13106,39 @@ int ObDMLResolver::infer_file_schema_streaming(ObFileSourceFormat fmt,
             if (OB_FAIL(schema.columns_.push_back(col))) {}
           }
         }
+      } else if (OB_ITER_END == (gr = cursor->next_row(head_row))) {
+        // empty file: no columns
+      } else if (OB_SUCCESS != gr) {
+        ret = OB_INVALID_DATA;
+        LOG_USER_ERROR(OB_INVALID_DATA, "bad csv first row, at line %ld", cursor->current_line());
+      } else {
+        // no header row: name the columns column_1..N after the first data row and keep
+        // that row for the inference scan below
+        for (int64_t i = 0; OB_SUCC(ret) && i < head_row.cells_.count(); ++i) {
+          ObSqlString tmp;
+          ObString name;
+          if (OB_FAIL(tmp.append_fmt("column_%ld", i + 1))) {
+          } else if (OB_FAIL(copy_file_cell(tmp.string(), allocator, name))) {
+          } else {
+            ObFileSchema::Column col;
+            col.name_ = name;
+            if (OB_FAIL(schema.columns_.push_back(col))) {}
+          }
+        }
+        for (int64_t i = 0; OB_SUCC(ret) && i < head_row.cells_.count(); ++i) {
+          ObString cell;
+          if (OB_FAIL(copy_file_cell(head_row.cells_.at(i), allocator, cell))) {
+          } else if (OB_FAIL(first_row.cells_.push_back(cell))) {}
+        }
+        has_first_row = OB_SUCC(ret);
+      }
+    } else if (ObFileSourceFormat::JSONL == fmt) {
+      // a JSONL file has no header: the column list is the union of the object fields,
+      // which is only known after scanning the whole input
+      int64_t jsonl_rows = 0;
+      if (OB_FAIL(ObFileSchemaInferer::infer_jsonl_schema(*cursor, params, allocator,
+                                                          schema, jsonl_rows))) {
+        LOG_USER_ERROR(OB_INVALID_DATA, "cannot infer the jsonl schema");
       }
     } else if (ObFileSourceFormat::PARQUET == fmt) {
       ObParquetFileCursor *pc = static_cast<ObParquetFileCursor *>(cursor);
@@ -13109,11 +13160,14 @@ int ObDMLResolver::infer_file_schema_streaming(ObFileSourceFormat fmt,
         if (OB_FAIL(schema.columns_.push_back(col))) {}
       }
     }
-    // full-input inference scan (GLOB needs none: its schema is fixed)
-    if (OB_SUCC(ret) && ObFileSourceFormat::GLOB != fmt) {
+    // full-input inference scan (GLOB and JSONL discover their schema above)
+    if (OB_SUCC(ret) && ObFileSourceFormat::GLOB != fmt
+        && ObFileSourceFormat::JSONL != fmt) {
       ObFileSchemaInferer inferer;
       inferer.init(schema.columns_.count());
       ObFileRow row;
+      if (has_first_row && OB_FAIL(inferer.feed_row(first_row, params))) {
+      }
       while (OB_SUCC(ret)) {
         int gr = cursor->next_row(row);
         if (OB_ITER_END == gr) { break; }
@@ -13326,7 +13380,6 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableIte
                                                  *allocator_, schema))) {
     // diagnostics already emitted
   }
-
   // build the cursor descriptor
   ObFileCursorDef *file_def = NULL;
   if (OB_FAIL(ret)) {
@@ -13391,6 +13444,21 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableIte
     table_def->access_type_ = ObValuesTableDef::ACCESS_FILE_CURSOR;
     table_def->column_cnt_ = file_def->columns_.count();
     table_def->file_def_ = file_def;
+    // A file table still has to look like an ordinary values table to the optimiser:
+    // OptTableMetas::add_values_table_meta_info() reads row_cnt_ plus the per-column
+    // column_ndvs_/column_nnvs_ arrays and reports 4013 when they are missing. The row
+    // count is an estimate (the streaming scan is not materialised at resolve time).
+    int64_t est_rows = 1;
+    if (ObFileSourceFormat::GLOB == fmt) {
+      est_rows = 10;
+    } else if (sig.size_ > 0) {
+      est_rows = (sig.size_ + 47) / 48;
+    }
+    table_def->row_cnt_ = est_rows;
+    for (int64_t c = 0; OB_SUCC(ret) && c < file_def->columns_.count(); ++c) {
+      if (OB_FAIL(table_def->column_ndvs_.push_back(est_rows))) {
+      } else if (OB_FAIL(table_def->column_nnvs_.push_back(0))) {}
+    }
   }
 
   // column types
@@ -13408,8 +13476,20 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &table_node, TableIte
         default: rt.set_type(ObVarcharType); break;
       }
       rt.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+      // ObObjMeta::set_collation_type() only derives the level from the high bits of the
+      // collation id, which leaves CS_LEVEL_INVALID here; a string column ref with an
+      // invalid collation level is rejected by ObRawExprDeduceType::visit (4016).
+      rt.set_collation_level(CS_LEVEL_IMPLICIT);
       rt.set_length(ObAccuracy::MAX_ACCURACY2[0][rt.get_type()].get_length());
       if (OB_FAIL(col_types.push_back(rt))) {}
+    }
+  }
+
+  // publish the column result types as values-table metadata
+  if (OB_FAIL(ret)) {
+  } else {
+    for (int64_t c = 0; OB_SUCC(ret) && c < col_types.count(); ++c) {
+      if (OB_FAIL(table_def->column_types_.push_back(col_types.at(c)))) {}
     }
   }
 
