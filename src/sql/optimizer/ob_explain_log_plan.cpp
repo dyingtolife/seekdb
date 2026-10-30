@@ -58,7 +58,7 @@ static bool detect_file_describe(const ObDMLStmt *child_stmt)
   return is_file_desc;
 }
 
-﻿// DESCRIBE <file table>: emit one metadata row per inferred column. The result
+// DESCRIBE <file table>: emit one metadata row per inferred column. The result
 // columns are column_name, column_type, null, key, default and extra (the DuckDB
 // DESCRIBE layout); key/default/extra are always NULL for a file table, and the
 // header itself is supplied by the result-set field metadata, not as a data row.
