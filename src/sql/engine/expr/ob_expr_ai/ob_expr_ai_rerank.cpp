@@ -188,6 +188,7 @@ int ObExprAIRerank::eval_ai_rerank(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &
           }
           if (OB_FAIL(construct_batch_document_array(temp_allocator, document_array, i, end_idx, batch_document_array))) {
           } else if (OB_FAIL(inner_eval_ai_rerank(temp_allocator, *info, *endpoint_info, header_array, query, batch_document_array, batch_result_array))) {
+          } else if (OB_FAIL(validate_model_result(batch_result_array, end_idx - i))) {
           } else if (OB_FAIL(batch_result_add_base(temp_allocator, batch_result_array, i))) {
           } else if (OB_FAIL(compact_json_array_by_key(temp_allocator, result_array, batch_result_array, score_key, compact_array))) {
           } else {
@@ -221,6 +222,7 @@ int ObExprAIRerank::eval_ai_rerank_with_doc_key(const ObExpr &expr, ObEvalCtx &c
     if (OB_FAIL(model.call_rerank(query, doc_array, result_array))) {
     } else if (OB_ISNULL(result_array)) {
       ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(validate_model_result(result_array, document_array->element_count()))) {
     } else if (OB_FAIL(sort_document_array_by_model_result(allocator, document_array, result_array, sorted_document_array))) {
     }
   }
@@ -272,6 +274,56 @@ int ObExprAIRerank::get_doc_array_from_documents_array_with_key(ObIAllocator &al
     }
     if (OB_SUCC(ret)) {
       doc_array = doc_array_obj;
+    }
+  }
+  return ret;
+}
+
+int ObExprAIRerank::validate_model_result(ObJsonArray *model_result_array, int64_t document_count)
+{
+  INIT_SUCC(ret);
+  if (OB_ISNULL(model_result_array)
+      || model_result_array->element_count() != static_cast<uint64_t>(document_count)) {
+    ret = OB_INVALID_DATA;
+  } else {
+    ObArray<bool> seen;
+    if (OB_FAIL(seen.prepare_allocate(document_count))) {
+    } else {
+      for (int64_t i = 0; i < document_count; ++i) {
+        seen[i] = false;
+      }
+      for (int64_t i = 0; OB_SUCC(ret) && i < model_result_array->element_count(); ++i) {
+        ObJsonNode *node = model_result_array->get_value(i);
+        ObJsonNode *index_node = nullptr;
+        ObJsonNode *score_node = nullptr;
+        if (OB_ISNULL(node) || node->json_type() != ObJsonNodeType::J_OBJECT) {
+          ret = OB_INVALID_DATA;
+          continue;
+        }
+        ObJsonObject *obj = static_cast<ObJsonObject *>(node);
+        index_node = obj->get_value(INDEX_KEY);
+        score_node = obj->get_value(SCORE_KEY);
+        if (OB_ISNULL(index_node) || OB_ISNULL(score_node)
+            || (index_node->json_type() != ObJsonNodeType::J_INT
+                && index_node->json_type() != ObJsonNodeType::J_UINT)
+            || (score_node->json_type() != ObJsonNodeType::J_DOUBLE
+                && score_node->json_type() != ObJsonNodeType::J_INT
+                && score_node->json_type() != ObJsonNodeType::J_UINT)) {
+          ret = OB_INVALID_DATA;
+          continue;
+        }
+        int64_t index = index_node->json_type() == ObJsonNodeType::J_INT
+            ? static_cast<ObJsonInt *>(index_node)->value()
+            : static_cast<int64_t>(static_cast<ObJsonUint *>(index_node)->value());
+        if (index < 0 || index >= document_count || seen[index]) {
+          ret = OB_INVALID_DATA;
+        } else if (score_node->json_type() == ObJsonNodeType::J_DOUBLE
+                   && !std::isfinite(static_cast<ObJsonDouble *>(score_node)->value())) {
+          ret = OB_INVALID_DATA;
+        } else {
+          seen[index] = true;
+        }
+      }
     }
   }
   return ret;

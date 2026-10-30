@@ -385,8 +385,11 @@ int ObOllamaUtils::ObOllamaComplete::parse_output(common::ObIAllocator &allocato
     ObJsonSeekResult hit;
     if (OB_FAIL(j_path.parse_path())) {
     } else if (OB_FAIL(j_tree->seek(j_path, j_path.path_node_cnt(), false, false, hit))) {
-    } else if (hit.size() == 0) {
-      ret = OB_ERR_UNEXPECTED;
+    } else if (hit.size() == 0 || OB_ISNULL(hit[0])
+               || hit[0]->json_type() != ObJsonNodeType::J_STRING
+               || hit[0]->get_data_length() == 0) {
+      // Ollama uses the same nonempty completion contract as OpenAI.
+      ret = OB_INVALID_DATA;
     } else {
       result = hit[0];
     }
@@ -1021,8 +1024,13 @@ int ObAIFuncJsonUtils::print_json_to_str(ObIAllocator &allocator, ObIJsonBase *b
   int ret = OB_SUCCESS;
   ObJsonBuffer j_buf(&allocator);
   if (OB_FAIL(base_node->print(j_buf, 0))) {
-  } else {
-    str = j_buf.string();
+    // The printed text lives in j_buf's own arena memory. ObString's implicit
+    // `const char *` constructor calls strlen(), which truncates the result at
+    // the first NUL byte; once j_buf is destroyed at scope exit the pointer
+    // also dangles. Deep-copy the full extent instead so callers that
+    // accumulate multiple results (for example the cross-row AI_EMBED batch)
+    // each own valid storage of the exact printed length.
+  } else if (OB_FAIL(ob_write_string(allocator, j_buf.string(), str))) {
   }
   return ret;
 }
@@ -1221,9 +1229,18 @@ int ObAIFuncUtils::check_info_type_rerank(const ObAIFuncExprInfo *info)
 int ObAIFuncUtils::set_string_result(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res, ObString &res_str)
 {
   int ret = OB_SUCCESS;
+  // ObTextStringDatumResult without an explicit allocator routes results longer
+  // than the reserved frame buffer through the per-expr ObDynReserveBuf, whose
+  // memory is REUSED by the next evaluation of the same expr. In a multi-row
+  // scan every datum of this expr then aliases one buffer, so all rows end up
+  // showing the last evaluation's bytes (observed as duplicated vectors and
+  // 3140 Invalid JSON on the cross-row AI_EMBED batch). Passing the never-reset
+  // expression-result allocator makes every evaluation own a distinct buffer
+  // that stays valid until the parent copies each row out, while keeping the
+  // temp-lob header semantics required by LOB-typed results (ai_complete).
   ObTextStringDatumResult text_result(expr.datum_meta_.type_, &expr, &ctx, &res);
   int64_t res_len = res_str.length();
-  if (OB_FAIL(text_result.init(res_len))) {
+  if (OB_FAIL(text_result.init(res_len, &ctx.get_expr_res_alloc()))) {
   } else if (OB_FAIL(text_result.append(res_str))) {
   } else {
     text_result.set_result();
@@ -1595,7 +1612,24 @@ int ObAIFuncModel::call_dense_embedding_vector_v2(ObArray<ObString> &content, Ob
         } else {
           ObJsonArray *vec = static_cast<ObJsonArray *>(j_base);
           int64_t vec_dim = vec->element_count();
-          if (expected_dim <= 0) {
+          // Embedding elements must be finite JSON numbers. In particular, do
+          // not accept strings, booleans, nulls or nested arrays merely because
+          // their printed representation looks like a vector.
+          for (int64_t k = 0; OB_SUCC(ret) && k < vec_dim; ++k) {
+            ObJsonNode *element = vec->get_value(k);
+            if (OB_ISNULL(element)
+                || (element->json_type() != ObJsonNodeType::J_DOUBLE
+                    && element->json_type() != ObJsonNodeType::J_INT
+                    && element->json_type() != ObJsonNodeType::J_UINT
+                    && element->json_type() != ObJsonNodeType::J_DECIMAL)) {
+              ret = OB_INVALID_DATA;
+            } else if (element->json_type() == ObJsonNodeType::J_DOUBLE
+                       && !std::isfinite(static_cast<ObJsonDouble *>(element)->value())) {
+              ret = OB_INVALID_DATA;
+            }
+          }
+          if (OB_FAIL(ret)) {
+          } else if (expected_dim <= 0) {
             if (vec_dim <= 0) {
               ret = OB_INVALID_DATA; // empty vector
             } else {

@@ -117,7 +117,7 @@ int ObExprAIComplete::eval_ai_complete(const ObExpr &expr,
       ObJsonObject *prompt_object = nullptr;
       bool is_null = false;
       if (OB_FAIL(ObJsonExprHelper::get_json_doc(expr, ctx, temp_allocator, PROMPT_IDX, j_base, is_null))) {
-      } else if (j_base->json_type() != ObJsonNodeType::J_OBJECT) {
+      } else if (OB_ISNULL(j_base) || j_base->json_type() != ObJsonNodeType::J_OBJECT) {
         ret = OB_INVALID_ARGUMENT;
       } else if (OB_FALSE_IT(prompt_object = static_cast<ObJsonObject *>(j_base))) {
       } else if (!ObAIFuncPromptObjectUtils::is_valid_prompt_object(prompt_object)) {
