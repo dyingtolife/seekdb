@@ -1288,25 +1288,28 @@ int ObParquetFileCursor::next_row(ObFileRow &row)
       group_done_ = group_row_cnt_ == 0;
     }
   }
-  if (OB_SUCC(ret)) {
+  // Emit exactly one row per call. This cursor is a row stream: the current row
+  // group is decoded once and then handed out cell by cell (cells are stored
+  // column-major, so cell index = row_in_group * col_cnt + col). The previous
+  // loop walked the whole group in a single call and appended every row to the
+  // same ObFileRow, so the caller - which reads col_cnt cells per call - saw
+  // only the first value and reported one row for the entire group.
+  if (OB_SUCC(ret) && cur_row_in_group_ < group_row_cnt_) {
     const int64_t col_cnt = col_names_.count();
-    for (int64_t c = 0; OB_SUCC(ret) && c < group_row_cnt_ && c == cur_row_in_group_; ++c) {
-      // emit cells of this row (column-major storage: cell = c * col_cnt + col)
-      for (int64_t col = 0; OB_SUCC(ret) && col < col_cnt; ++col) {
-        const int64_t cell_idx = cur_row_in_group_ * col_cnt + col;
-        if (col < needed_.count() && !needed_.at(col)) {
-          if (OB_FAIL(row.cells_.push_back(ObString()))) {}
-        } else if (cell_idx < cur_cells_.cells_.count()) {
-          if (OB_FAIL(row.cells_.push_back(cur_cells_.cells_.at(cell_idx)))) {}
-        } else {
-          ret = OB_ERR_UNEXPECTED;
-        }
+    for (int64_t col = 0; OB_SUCC(ret) && col < col_cnt; ++col) {
+      const int64_t cell_idx = cur_row_in_group_ * col_cnt + col;
+      if (col < needed_.count() && !needed_.at(col)) {
+        if (OB_FAIL(row.cells_.push_back(ObString()))) {}
+      } else if (cell_idx < cur_cells_.cells_.count()) {
+        if (OB_FAIL(row.cells_.push_back(cur_cells_.cells_.at(cell_idx)))) {}
+      } else {
+        ret = OB_ERR_UNEXPECTED;
       }
-      if (OB_SUCC(ret)) {
-        ++cur_row_in_group_;
-        if (cur_row_in_group_ >= group_row_cnt_) {
-          group_done_ = true;
-        }
+    }
+    if (OB_SUCC(ret)) {
+      ++cur_row_in_group_;
+      if (cur_row_in_group_ >= group_row_cnt_) {
+        group_done_ = true;
       }
     }
   }
@@ -1413,23 +1416,29 @@ ObFileColumnType ObFileSchemaInferer::classify(const common::ObString &cell)
 
 ObFileColumnType ObFileSchemaInferer::widen(ObFileColumnType cur, ObFileColumnType cand)
 {
+  // Widening must be commutative: the inferred type may not depend on the order
+  // in which the sampled rows are visited. The previous implementation listed
+  // only the (BOOLEAN,BIGINT), (BOOLEAN,DOUBLE), (BIGINT,BOOLEAN),
+  // (BIGINT,DOUBLE) and (DATE,DATETIME) pairs, so the mirrored pair - e.g.
+  // score "98.5" (DOUBLE) followed by "87" (BIGINT) as in basic.csv - fell
+  // through to VARCHAR and turned the whole numeric column into text.
+  const bool cur_numeric = cur == ObFileColumnType::BOOLEAN
+      || cur == ObFileColumnType::BIGINT || cur == ObFileColumnType::DOUBLE;
+  const bool cand_numeric = cand == ObFileColumnType::BOOLEAN
+      || cand == ObFileColumnType::BIGINT || cand == ObFileColumnType::DOUBLE;
   ObFileColumnType merged = cur;
   if (cur == ObFileColumnType::NIL) {
     merged = cand;
-  } else if (cur != cand) {
-    if (cur == ObFileColumnType::BOOLEAN && cand == ObFileColumnType::BIGINT) {
-      merged = ObFileColumnType::BIGINT;
-    } else if (cur == ObFileColumnType::BOOLEAN && cand == ObFileColumnType::DOUBLE) {
-      merged = ObFileColumnType::DOUBLE;
-    } else if (cur == ObFileColumnType::BIGINT && cand == ObFileColumnType::BOOLEAN) {
-      merged = ObFileColumnType::BIGINT;
-    } else if (cur == ObFileColumnType::BIGINT && cand == ObFileColumnType::DOUBLE) {
-      merged = ObFileColumnType::DOUBLE;
-    } else if (cur == ObFileColumnType::DATE && cand == ObFileColumnType::DATETIME) {
-      merged = ObFileColumnType::DATETIME;
-    } else {
-      merged = ObFileColumnType::VARCHAR;
-    }
+  } else if (cur == cand) {
+    merged = cur;
+  } else if (cur_numeric && cand_numeric) {
+    merged = (cur == ObFileColumnType::DOUBLE || cand == ObFileColumnType::DOUBLE)
+        ? ObFileColumnType::DOUBLE : ObFileColumnType::BIGINT;
+  } else if ((cur == ObFileColumnType::DATE || cur == ObFileColumnType::DATETIME)
+             && (cand == ObFileColumnType::DATE || cand == ObFileColumnType::DATETIME)) {
+    merged = ObFileColumnType::DATETIME;
+  } else {
+    merged = ObFileColumnType::VARCHAR;
   }
   return merged;
 }
