@@ -138,7 +138,17 @@ bool ObTextWhitespaceTokenizer::found_delimiter()
 {
   bool found = false;
   const char *curr_char = input_doc_->ptr_ + trav_pos_;
-  found = ob_isspace(cs_, *curr_char) || ob_iscntrl(cs_, *curr_char) || ob_ispunct(cs_, *curr_char);
+  // single ctype-array fetch for the combined delimiter predicate. The three
+  // ob_is* macros previously expanded to three loads of (cs->ctype + 1)[c] plus
+  // three NULL checks; a bit-test against the union mask
+  // (_MY_SPC | _MY_CTR | _MY_PNT) returns the same result for every byte value
+  // when ctype is present, and yields 0 the same way when ctype is NULL
+  // (the ternary guard is kept explicitly below).
+  const unsigned char char_val = static_cast<unsigned char>(*curr_char);
+  const unsigned char *ctype = (nullptr != cs_ && nullptr != cs_->ctype) ? cs_->ctype + 1 : nullptr;
+  if (nullptr != ctype) {
+    found = 0 != (ctype[char_val] & (_MY_SPC | _MY_CTR | _MY_PNT));
+  }
   return found;
 }
 

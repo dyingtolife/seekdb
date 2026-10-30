@@ -74,35 +74,51 @@ void ObStopWordChecker::destroy()
 int ObStopWordChecker::check_stopword(const ObFTWord &word, bool &is_stopword)
 {
   int ret = OB_SUCCESS;
-  
-  
-  common::ObArenaAllocator allocator(lib::ObMemAttr("ChkStopWord"));
   if (OB_UNLIKELY(!inited_)) {
     ret = OB_NOT_INIT;
   } else if (OB_UNLIKELY(word.empty())) {
     ret = OB_INVALID_ARGUMENT;
   } else {
-    common::ObString cmp_str;
-    // do nothing set out with in if type is the same.
-    if (OB_FAIL(common::ObCharset::charset_convert(
-                                       allocator,
-                                       word.get_word().get_string(),
-                                       word.get_collation_type(),
-                                       stopword_type_.get_collation_type(),
-                                       cmp_str))) {
+    int hash_ret = OB_SUCCESS;
+    if (stopword_type_.get_collation_type() == word.get_collation_type()) {
+      // fast path: the word already uses the stopword collation, no conversion is
+      // needed, so the per-call arena allocator and the charset_convert copy path
+      // are skipped. ObFTWord keys are shallow ptr+len views, comparing the word
+      // directly is equivalent to comparing the (identical) converted string.
+      ObFTWord converted(word.get_word().get_string().length(),
+                         word.get_word().get_string().ptr(),
+                         stopword_type_);
+      hash_ret = stopword_set_.exist_refactored(converted);
     } else {
-      ObFTWord converted(cmp_str.length(), cmp_str.ptr(), stopword_type_);
-      ret = stopword_set_.exist_refactored(converted);
-      if (OB_HASH_NOT_EXIST == ret) {
-        is_stopword = false;
-        ret = OB_SUCCESS;
-      } else if (OB_HASH_EXIST == ret) {
-        is_stopword = true;
-        ret = OB_SUCCESS;
-      } else if (OB_SUCC(ret)) {
-        ret = OB_ERR_UNEXPECTED;
+      common::ObArenaAllocator allocator(lib::ObMemAttr("ChkStopWord"));
+      common::ObString cmp_str;
+      if (OB_FAIL(common::ObCharset::charset_convert(
+                                         allocator,
+                                         word.get_word().get_string(),
+                                         word.get_collation_type(),
+                                         stopword_type_.get_collation_type(),
+                                         cmp_str))) {
       } else {
+        ObFTWord converted(cmp_str.length(), cmp_str.ptr(), stopword_type_);
+        hash_ret = stopword_set_.exist_refactored(converted);
       }
+    }
+    // NB: OB_HASH_EXIST (-4200) and OB_HASH_NOT_EXIST (-4201) are non-zero, so
+    // they must be matched BEFORE OB_FAIL(hash_ret) or both would be treated as
+    // errors. This mirrors the original ret-based classification.
+    if (OB_FAIL(ret)) {
+      // slow-path charset_convert failure: propagate the real convert error,
+      // matching the pre-optimization behavior, instead of letting the
+      // classification below synthesize OB_ERR_UNEXPECTED.
+    } else if (OB_HASH_NOT_EXIST == hash_ret) {
+      is_stopword = false;
+    } else if (OB_HASH_EXIST == hash_ret) {
+      is_stopword = true;
+    } else if (OB_SUCC(hash_ret)) {
+      // defensive: exist_refactored never returns plain OB_SUCCESS
+      ret = OB_ERR_UNEXPECTED;
+    } else {
+      ret = hash_ret;
     }
   }
   return ret;
@@ -198,20 +214,29 @@ int ObAddWord::check_stopword(const ObFTWord &ft_word, bool &is_stopword)
 int ObAddWord::groupby_word(const ObFTWord &word, const int64_t word_freq)
 {
   int ret = OB_SUCCESS;
-  int64_t word_count = 0;
   if (OB_UNLIKELY(word.empty() || word_freq <= 0)) {
     ret = OB_INVALID_ARGUMENT;
   } else if (!flag_.groupby_word()) {
     if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
     }
-  } else if (OB_FAIL(word_map_.get_refactored(word, word_count)) && OB_HASH_NOT_EXIST != ret) {
   } else {
-    if (OB_HASH_NOT_EXIST == ret) {
-      word_count = 1;
-    } else {
-      word_count += word_freq;
-    }
-    if (OB_FAIL(word_map_.set_refactored(word, word_count, 1/*overwrite*/))) {
+    // single traversal aggregation for repeated words: atomic_refactored updates
+    // the existing counter in place under one bucket write lock, so the hot path
+    // (a word that already exists in the map) pays one lookup and no node
+    // allocation. The old pattern always paid a read lookup plus a full pair
+    // overwrite (node alloc + node free). Only the first occurrence of a word
+    // falls back to an insertion with count 1, then later occurrences add
+    // word_freq in place, matching the historical get + overwrite sequence
+    // exactly. word_map_ is doc-local, so the miss-then-insert pair cannot race.
+    // ObHashMap::atomic_refactored forwards to the underlying ObHashTable whose
+    // preproc hands the callback the whole key/value pair, hence pair.second.
+    auto update_counter = [word_freq](auto &pair) { pair.second += word_freq; };
+    int hash_ret = word_map_.atomic_refactored(word, update_counter);
+    if (OB_HASH_NOT_EXIST == hash_ret) {
+      if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
+      }
+    } else if (OB_UNLIKELY(OB_SUCCESS != hash_ret)) {
+      ret = hash_ret;
     }
   }
   return ret;
