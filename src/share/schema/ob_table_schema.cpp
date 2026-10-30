@@ -2637,6 +2637,7 @@ void ObTableSchema::reset()
   auto_increment_cache_size_ = 0;
 
   semistruct_encoding_type_.reset();
+  ai_columns_.reset();
   ObSimpleTableSchemaV2::reset();
 }
 
