@@ -4100,7 +4100,13 @@ int ObSchemaServiceSQLImpl::get_not_core_table_schema(
       && OB_FAIL(fetch_trigger_list(schema_status, table_id, schema_version,
                                     sql_client, *table_schema))) {
   }
+  // AI metadata lives only on user tables. Inner tables (id < OB_MAX_INNER_TABLE_ID)
+  // never carry AI columns; fetching AI info FOR them queries __all_ai_column_history,
+  // which recurses into the refresh that is currently building this very schema
+  // (same self-reference as for the AI metadata tables themselves) and ends with
+  // OB_ITER_END half-built schemas. Skip inner tables entirely.
   if (OB_SUCC(ret) && !is_schema_fetch_dependency
+      && table_id >= OB_MAX_INNER_TABLE_ID
       && OB_FAIL(fetch_ai_column_info(schema_status, table_id, schema_version,
                                       sql_client, allocator, *table_schema))) {
   }
