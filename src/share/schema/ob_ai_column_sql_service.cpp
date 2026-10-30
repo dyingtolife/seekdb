@@ -112,15 +112,12 @@ int ObAiColumnSqlService::create_ai_column(const ObAiColumnSchema &ai_column,
   } else if (OB_FAIL(exec_insert(OB_ALL_AI_COLUMN_HISTORY_TNAME, dml, sql_client))) {
     SHARE_SCHEMA_LOG(WARN, "failed to insert ai column history row", K(ret));
   } else {
-    ObSchemaOperation opt;
-    opt.table_id_ = table_id;
-    opt.column_id_ = ai_column.column_id_;
-    opt.op_type_ = OB_DDL_CREATE_AI_COLUMN;
-    opt.schema_version_ = table_schema_version;
-    opt.ddl_stmt_str_ = ddl_stmt;
-    if (OB_FAIL(log_operation(opt, sql_client))) {
-      SHARE_SCHEMA_LOG(WARN, "failed to log create ai column operation", K(ret));
-    }
+    // No separate __all_ddl_operation row here: that table is keyed by
+    // schema_version alone, and both callers (CREATE TABLE via
+    // ObTableHelper::create_tables_ and ALTER TABLE ADD COLUMN via
+    // ObDDLService::add_new_column_to_table_schema) already log their own
+    // DDL operation at this schema version. A second row would collide on
+    // the primary key (OB_ERR_PRIMARY_KEY_DUPLICATE).
   }
   return ret;
 }
