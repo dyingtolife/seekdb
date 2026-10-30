@@ -2530,7 +2530,14 @@ all_ai_column_task_def = dict(
         ('retries', 'int', 'false', 0),
         ('request_id', 'varchar:64', 'false', ''),
         ('state', 'int', 'false', 0),
-        ('retry_count', 'int', 'false', 0)
+        ('retry_count', 'int', 'false', 0),
+        # Claim identity. A claimed row is owned by exactly one claimant token,
+        # and the claim is read back by (state, claim_owner) instead of by a
+        # wall-clock window: a slow claim can no longer lose the rows it just
+        # marked EXECUTING, and a crashed worker leaves rows whose claim_ts
+        # lets recovery tell them apart from a live claim.
+        ('claim_owner', 'varchar:64', 'false', ''),
+        ('claim_ts', 'timestamp:6', 'false')
     ]
 )
 def_table_schema(**all_ai_column_task_def)

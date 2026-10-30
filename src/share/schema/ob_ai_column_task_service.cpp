@@ -19,6 +19,7 @@
 #include "share/schema/ob_schema_getter_guard.h"
 #include "common/mysqlclient/ob_mysql_proxy.h"
 #include "common/object/ob_object.h"
+#include "lib/time/ob_time_utility.h"
 
 namespace oceanbase
 {
@@ -294,49 +295,66 @@ int ObAiColumnTaskService::claim_tasks(ObISQLClient &sql_client,
   // state moved. RETRY_WAIT rows become claimable once eligible_ts (set to
   // now() + retry delay by fail_task) passes, which is what makes the
   // bounded-retry loop actually run.
+  //
+  // The claim identity is the OWNER TOKEN written by the claim UPDATE, not a
+  // wall-clock window. The previous read-back filtered on
+  // "gmt_modified >= now(6) - INTERVAL 10 SECOND", which made the claim depend
+  // on how fast the read ran: any row whose read-back slipped past the window
+  // stayed EXECUTING forever (live evidence: 6 rows at state=1, never consumed).
+  // A token is exact and cannot expire.
+  const int64_t claim_token = ObTimeUtility::current_time();
   ObSqlString claim_sql;
   int64_t affected = 0;
   if (OB_FAIL(claim_sql.assign_fmt(
-          "UPDATE %s SET state = %d, gmt_modified = now(6)"
+          "UPDATE %s SET state = %d, claim_owner = '%ld', claim_ts = now(6),"
+          " gmt_modified = now(6)"
           " WHERE state IN (%d, %d) AND eligible_ts <= now(6)"
           " ORDER BY task_id ASC LIMIT %ld",
           OB_AI_COLUMN_TASK_TABLE, static_cast<int>(AI_TASK_EXECUTING),
+          claim_token,
           static_cast<int>(AI_TASK_PENDING), static_cast<int>(AI_TASK_RETRY_WAIT),
           max_batch))) {
-    SHARE_SCHEMA_LOG(WARN, "build claim sql failed", K(ret));
+    SHARE_SCHEMA_LOG(ERROR, "build claim sql failed", K(ret));
   } else if (OB_FAIL(exec_write(sql_client, claim_sql, affected))) {
-    SHARE_SCHEMA_LOG(WARN, "claim ai tasks failed", K(ret));
+    SHARE_SCHEMA_LOG(ERROR, "claim ai tasks failed", K(ret), K(claim_token));
   } else if (affected > 0) {
     ObSqlString read_sql;
     SMART_VAR(ObMySQLProxy::MySQLResult, res) {
       ObMySQLResult *result = NULL;
+      // table_id / column_id / task_id are SIGNED bigint inner-table columns,
+      // so they must be read with get_int: ObObj::get_uint64() only accepts an
+      // exact UInt64 and returns OB_OBJ_TYPE_ERROR (-4001) for a signed int,
+      // which is what used to abort this loop on the very first row and leave
+      // every claimed task unread (and therefore stuck in EXECUTING).
       if (OB_FAIL(read_sql.assign_fmt(
               "SELECT table_id, task_id, column_id, rowkey_predicate,"
               " request_id, definition_version, retry_count FROM %s"
-              " WHERE state = %d AND gmt_modified >= now(6) - INTERVAL 10 SECOND"
+              " WHERE state = %d AND claim_owner = '%ld'"
               " ORDER BY task_id ASC",
-              OB_AI_COLUMN_TASK_TABLE, static_cast<int>(AI_TASK_EXECUTING)))) {
-        SHARE_SCHEMA_LOG(WARN, "build read claimed sql failed", K(ret));
+              OB_AI_COLUMN_TASK_TABLE, static_cast<int>(AI_TASK_EXECUTING),
+              claim_token))) {
+        SHARE_SCHEMA_LOG(ERROR, "build read claimed sql failed", K(ret));
       } else if (OB_FAIL(sql_client.read(res, read_sql.ptr()))) {
-        SHARE_SCHEMA_LOG(WARN, "read claimed tasks failed", K(ret));
+        SHARE_SCHEMA_LOG(ERROR, "read claimed tasks failed", K(ret), "sql", read_sql.ptr());
       } else if (OB_ISNULL(result = res.get_result())) {
         ret = OB_ERR_UNEXPECTED;
+        SHARE_SCHEMA_LOG(ERROR, "claimed tasks result missing", K(ret));
       } else {
         while (OB_SUCC(ret) && OB_SUCC(result->next())) {
           ClaimedTask task;
-          int64_t tmp_int = 0;
-          if (OB_FAIL(result->get_uint("table_id", task.table_id_))) {
-            SHARE_SCHEMA_LOG(WARN, "read task table id failed", K(ret));
-          } else if (OB_FAIL(result->get_int("task_id", tmp_int))) {
-            SHARE_SCHEMA_LOG(WARN, "read task id failed", K(ret));
-          } else if (OB_FAIL(result->get_uint("column_id", task.column_id_))) {
-            SHARE_SCHEMA_LOG(WARN, "read task column id failed", K(ret));
+          int64_t table_id = 0;
+          int64_t task_id = 0;
+          int64_t column_id = 0;
+          if (OB_FAIL(result->get_int("table_id", table_id))) {
+            SHARE_SCHEMA_LOG(ERROR, "read task table id failed", K(ret));
+          } else if (OB_FAIL(result->get_int("task_id", task_id))) {
+            SHARE_SCHEMA_LOG(ERROR, "read task id failed", K(ret));
+          } else if (OB_FAIL(result->get_int("column_id", column_id))) {
+            SHARE_SCHEMA_LOG(ERROR, "read task column id failed", K(ret));
           } else if (OB_FAIL(result->get_int("definition_version", task.definition_version_))) {
-            SHARE_SCHEMA_LOG(WARN, "read task definition version failed", K(ret));
+            SHARE_SCHEMA_LOG(ERROR, "read task definition version failed", K(ret));
           } else if (OB_FAIL(result->get_int("retry_count", task.retry_count_))) {
-            SHARE_SCHEMA_LOG(WARN, "read task retry count failed", K(ret));
-          } else {
-            task.task_id_ = tmp_int;
+            SHARE_SCHEMA_LOG(ERROR, "read task retry count failed", K(ret));
           }
           if (OB_FAIL(ret)) {
             // leave loop on read error
@@ -345,18 +363,21 @@ int ObAiColumnTaskService::claim_tasks(ObISQLClient &sql_client,
             ObString rowkey_copy;
             ObString request_copy;
             if (OB_FAIL(result->get_varchar("rowkey_predicate", tmp))) {
-              SHARE_SCHEMA_LOG(WARN, "read rowkey predicate failed", K(ret));
+              SHARE_SCHEMA_LOG(ERROR, "read rowkey predicate failed", K(ret));
             } else if (OB_FAIL(ob_write_string(allocator_, tmp, rowkey_copy))) {
-              SHARE_SCHEMA_LOG(WARN, "copy rowkey predicate failed", K(ret));
+              SHARE_SCHEMA_LOG(ERROR, "copy rowkey predicate failed", K(ret));
             } else if (OB_FAIL(result->get_varchar("request_id", tmp))) {
-              SHARE_SCHEMA_LOG(WARN, "read request id failed", K(ret));
+              SHARE_SCHEMA_LOG(ERROR, "read request id failed", K(ret));
             } else if (OB_FAIL(ob_write_string(allocator_, tmp, request_copy))) {
-              SHARE_SCHEMA_LOG(WARN, "copy request id failed", K(ret));
+              SHARE_SCHEMA_LOG(ERROR, "copy request id failed", K(ret));
             } else {
+              task.table_id_ = static_cast<uint64_t>(table_id);
+              task.task_id_ = task_id;
+              task.column_id_ = static_cast<uint64_t>(column_id);
               task.rowkey_predicate_ = rowkey_copy;
               task.request_id_ = request_copy;
               if (OB_FAIL(tasks.push_back(task))) {
-                SHARE_SCHEMA_LOG(WARN, "append claimed task failed", K(ret));
+                SHARE_SCHEMA_LOG(ERROR, "append claimed task failed", K(ret));
               }
             }
           }
@@ -365,6 +386,14 @@ int ObAiColumnTaskService::claim_tasks(ObISQLClient &sql_client,
           ret = OB_SUCCESS;
         }
       }
+    }
+    // ERROR level on purpose: WARN is compiled out and these two counts are
+    // what localises a claim that marks rows but fails to read them back.
+    SHARE_SCHEMA_LOG(ERROR, "ai claim end", K(claim_token), K(affected),
+                     "claimed", tasks.count(), K(ret));
+    if (OB_SUCC(ret) && tasks.count() != affected) {
+      SHARE_SCHEMA_LOG(ERROR, "ai claim count mismatch", K(claim_token),
+                       K(affected), "claimed", tasks.count());
     }
   }
   return ret;
@@ -375,15 +404,19 @@ int ObAiColumnTaskService::recover_stuck_tasks(ObISQLClient &sql_client)
   int ret = OB_SUCCESS;
   ObSqlString sql;
   int64_t affected = 0;
+  // Single worker: anything still EXECUTING belongs to a dead claim. Identity
+  // is cleared together with the state so the next claim sweep takes the row
+  // under a fresh owner token (the old one can never be matched again).
   if (OB_FAIL(sql.assign_fmt(
-          "UPDATE %s SET state = %d WHERE state = %d",
+          "UPDATE %s SET state = %d, claim_owner = '', claim_ts = now(6)"
+          " WHERE state = %d",
           OB_AI_COLUMN_TASK_TABLE, static_cast<int>(AI_TASK_PENDING),
           static_cast<int>(AI_TASK_EXECUTING)))) {
-    SHARE_SCHEMA_LOG(WARN, "build recover sql failed", K(ret));
+    SHARE_SCHEMA_LOG(ERROR, "build recover sql failed", K(ret));
   } else if (OB_FAIL(exec_write(sql_client, sql, affected))) {
-    SHARE_SCHEMA_LOG(WARN, "recover stuck tasks failed", K(ret));
+    SHARE_SCHEMA_LOG(ERROR, "recover stuck tasks failed", K(ret));
   } else if (affected > 0) {
-    SHARE_SCHEMA_LOG(INFO, "recovered stuck ai column tasks", K(affected));
+    SHARE_SCHEMA_LOG(ERROR, "recovered stuck ai column tasks", K(affected));
   }
   return ret;
 }
