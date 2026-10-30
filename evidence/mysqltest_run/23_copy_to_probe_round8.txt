@@ -1,0 +1,114 @@
+######## 1. ROUND TRIP: header + defaults
+### copy (select id, name, score from read_csv('/home/hjy/work/fs_e2e/r13/data_for_mysqltest_file_sql/basic.csv') order by id) to '/home/hjy/work/fs_e2e/r13/copy_out/rt.csv' (format csv, header)
+### rc=0
+--- bytes ---
+0000000   i   d   ,   n   a   m   e   ,   s   c   o   r   e  \n   1   ,
+0000020   "   A   l   i   c   e   "   ,   9   8   .   5  \n   2   ,   "
+0000040   B   o   b   "   ,   8   7  \n   3   ,   "   C   h   e   n   "
+0000060   ,   9   0   .   2   5  \n
+0000067
+### select id, name, score from read_csv('/home/hjy/work/fs_e2e/r13/copy_out/rt.csv') order by id
+id	name	score
+1	Alice	98.5
+2	Bob	87
+3	Chen	90.25
+### rc=0
+--- source truth ---
+### select id, name, score from read_csv('/home/hjy/work/fs_e2e/r13/data_for_mysqltest_file_sql/basic.csv') order by id
+id	name	score
+1	Alice	98.5
+2	Bob	87
+3	Chen	90.25
+### rc=0
+######## 2. header=false
+### copy (select id, name, score from read_csv('/home/hjy/work/fs_e2e/r13/data_for_mysqltest_file_sql/basic.csv') order by id) to '/home/hjy/work/fs_e2e/r13/copy_out/nohdr.csv' (format csv, header=false)
+### rc=0
+--- bytes ---
+0000000   1   ,   "   A   l   i   c   e   "   ,   9   8   .   5  \n   2
+0000020   ,   "   B   o   b   "   ,   8   7  \n   3   ,   "   C   h   e
+0000040   n   "   ,   9   0   .   2   5  \n
+0000051
+### select id, name, score from read_csv('/home/hjy/work/fs_e2e/r13/copy_out/nohdr.csv', header=false) order by id
+ERROR 1054 (42S22) at line 1: Unknown column 'id' in 'field list'
+### rc=1
+######## 3. tricky text: embedded newline and doubled quotes
+### copy (select id, note from read_csv('/home/hjy/work/fs_e2e/r13/data_for_mysqltest_file_sql/basic.csv') order by id) to '/home/hjy/work/fs_e2e/r13/copy_out/note.csv' (format csv, header)
+### rc=0
+--- bytes ---
+0000000   i   d   ,   n   o   t   e  \n   1   ,   "   h   e   l   l   o
+0000020   ,  \n   w   o   r   l   d   "  \n   2   ,   "   p   l   a   i
+0000040   n   "  \n   3   ,   "   s   a   y       "   "   h   i   "   "
+0000060   "  \n
+0000062
+### select id, replace(note, char(10), '<NL>') as note from read_csv('/home/hjy/work/fs_e2e/r13/copy_out/note.csv') order by id
+id	note
+1	hello,<NL>world
+2	plain
+3	say "hi"
+### rc=0
+######## 4. nullstr 'NULL'
+### copy (select id, day from read_csv('/home/hjy/work/fs_e2e/r13/data_for_mysqltest_file_sql/basic.csv') order by id) to '/home/hjy/work/fs_e2e/r13/copy_out/nul.csv' (format csv, header, nullstr 'NULL')
+### rc=0
+--- bytes ---
+0000000   i   d   ,   d   a   y  \n   1   ,   "   2   0   2   6   -   0
+0000020   8   -   0   1   "  \n   2   ,   N   U   L   L  \n   3   ,   "
+0000040   2   0   2   6   -   0   8   -   0   3   "  \n
+0000054
+### select id, day from read_csv('/home/hjy/work/fs_e2e/r13/copy_out/nul.csv', header=true, nullstr='NULL') order by id
+id	day
+1	2026-08-01
+2	NULL
+3	2026-08-03
+### rc=0
+### select count(*) as null_days from read_csv('/home/hjy/work/fs_e2e/r13/copy_out/nul.csv', header=true, nullstr='NULL') where day is null
+null_days
+1
+### rc=0
+######## 5. custom delimiter
+### copy (select id, name from read_csv('/home/hjy/work/fs_e2e/r13/data_for_mysqltest_file_sql/basic.csv') order by id) to '/home/hjy/work/fs_e2e/r13/copy_out/pipe.csv' (format csv, header, delimiter '|')
+### rc=0
+--- bytes ---
+0000000   i   d   |   n   a   m   e  \n   1   |   "   A   l   i   c   e
+0000020   "  \n   2   |   "   B   o   b   "  \n   3   |   "   C   h   e
+0000040   n   "  \n
+0000043
+### select id, name from read_csv('/home/hjy/work/fs_e2e/r13/copy_out/pipe.csv', delimiter='|') order by id
+id	name
+1	Alice
+2	Bob
+3	Chen
+### rc=0
+######## 6. fail if the target already exists
+--- existing target re-run (expect an error) ---
+### copy (select id, name, score from read_csv('/home/hjy/work/fs_e2e/r13/data_for_mysqltest_file_sql/basic.csv') order by id) to '/home/hjy/work/fs_e2e/r13/copy_out/rt.csv' (format csv, header)
+ERROR 1086 (58000) at line 1: File already exist
+### rc=1
+######## 7. cleanup when the query fails at execution time
+--- 7a scalar subquery returning more than one row ---
+### copy (select id, (select 1 union all select 2) as x from read_csv('/home/hjy/work/fs_e2e/r13/data_for_mysqltest_file_sql/basic.csv') order by id) to '/home/hjy/work/fs_e2e/r13/copy_out/fail1.csv' (format csv, header)
+ERROR 1242 (21000) at line 1: Subquery returns more than 1 row
+### rc=1
+ls: cannot access '/home/hjy/work/fs_e2e/r13/copy_out/fail1.csv': No such file or directory
+--- 7b malformed source csv ---
+### copy (select * from read_csv('/home/hjy/work/fs_e2e/r13/copy_out/bad.csv')) to '/home/hjy/work/fs_e2e/r13/copy_out/fail2.csv' (format csv, header)
+ERROR 4070 (HY000) at line 1: Invalid data
+### rc=1
+ls: cannot access '/home/hjy/work/fs_e2e/r13/copy_out/fail2.csv': No such file or directory
+######## 8. syntax guards
+### copy (select 1) to '/home/hjy/work/fs_e2e/r13/copy_out/x1.csv' (format parquet)
+ERROR 1064 (42000) at line 1: only csv format is supported near '' at line 1836017711
+### rc=1
+### copy (select 1) to '/home/hjy/work/fs_e2e/r13/copy_out/x2.csv' (bogus_option 1)
+ERROR 1064 (42000) at line 1: unknown COPY option near '' at line 1836017711
+### rc=1
+### copy (select 1) to '/etc/seekdb_should_not_write.csv' (format csv)
+ERROR 4009 (58030) at line 1: IO error
+### rc=1
+######## 9. files produced
+total 24
+-rw-r--r-- 1 hjy hjy 20 Oct 30 15:23 bad.csv
+-rw-r--r-- 1 hjy hjy 41 Oct 30 15:23 nohdr.csv
+-rw-r--r-- 1 hjy hjy 50 Oct 30 15:23 note.csv
+-rw-r--r-- 1 hjy hjy 44 Oct 30 15:23 nul.csv
+-rw-r--r-- 1 hjy hjy 35 Oct 30 15:23 pipe.csv
+-rw-r--r-- 1 hjy hjy 55 Oct 30 15:23 rt.csv

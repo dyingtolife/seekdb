@@ -1,0 +1,11 @@
+Round 8 - full file_sql mysqltest run, observer booted fresh (DEFAULT params, port 2886)
+binary sha256: a903e4c857732fae1791b3143eac1123fbf7a350484e4d5ecc1ec3a5e03f0d43  size: 1304341480
+code commit: 5d961f429 (docs/evidence commit follows it on the same branch)
+runner: evidence/mysqltest_run/scripts/87_run_suite_r8.sh  (RECORD=0)
+result file: tools/deploy/mysql_test/test_suite/file_sql/r/mysql/file_sql_basic.result
+date: 2026-10-30 15:27:13 CST
+----------------------------------------------------------------
+boot: PORT_UP after 4s
+mysqltest stdout (verbatim):
+ok
+MYSQLTEST_EXIT=0
