@@ -1,0 +1,60 @@
+booted seekdb on 2883
+PASS mock-start
+PASS create-model
+PASS create-endpoint
+PASS create-fail-model
+PASS create-fail-endpoint
+PASS step1-create-ai-column
+PASS step2-metadata-rows | 2
+PASS step2-hidden-cols-summary | 3
+PASS step2-hidden-cols-risky | 3
+PASS step2-six-hidden-cols | 6
+PASS step3-insert1-ok
+PASS step3-insert2-ok
+PASS step3-task-enqueued | 4
+PASS step3-hidden-cols-not-in-select-star | ['id', 'content', 'title', 'summary', 'risky']
+PASS step3-row1-tasks-pending | 2
+PASS step3-result-null
+FAIL step4-row1-ready
+FAIL step4-row2-ready
+PASS step4-tasks-consumed
+FAIL step4-deterministic-result
+FAIL step5-select-results | [None, None]
+PASS step6-update-ok
+FAIL step6-retask-new-result
+PASS step6-task-drained-again
+PASS step7-update-title-ok
+PASS step7-no-new-task
+FAIL step7-result-stable
+PASS step8a-insert-ok
+PASS step8a-terminal-failed
+PASS step8a-failed-result-null | 1
+FAIL step8a-summary-still-ok | OperationalError(2003, "Can't connect to MySQL server on '127.0.0.1' ([Errno 111] Connection refused)")
+FAIL step8a-failed-tasks-removed | OperationalError(2003, "Can't connect to MySQL server on '127.0.0.1' ([Errno 111] Connection refused)")
+Traceback (most recent call last):
+  File "/home/hjy/.local/lib/python3.12/site-packages/pymysql/connections.py", line 681, in connect
+    sock = socket.create_connection(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socket.py", line 852, in create_connection
+    raise exceptions[0]
+  File "/usr/lib/python3.12/socket.py", line 837, in create_connection
+    sock.connect(sa)
+ConnectionRefusedError: [Errno 111] Connection refused
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/hjy/work/seekdb-05b/e2e/e2e_ai_column_runtime_r2.py", line 442, in <module>
+    main()
+  File "/home/hjy/work/seekdb-05b/e2e/e2e_ai_column_runtime_r2.py", line 385, in main
+    conn = connect(DB)
+           ^^^^^^^^^^^
+  File "/home/hjy/work/seekdb-05b/e2e/e2e_ai_column_runtime_r2.py", line 64, in connect
+    return pymysql.connect(host="127.0.0.1", port=PORT, user="root", password="",
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/hjy/.local/lib/python3.12/site-packages/pymysql/connections.py", line 373, in __init__
+    self.connect()
+  File "/home/hjy/.local/lib/python3.12/site-packages/pymysql/connections.py", line 744, in connect
+    raise exc
+pymysql.err.OperationalError: (2003, "Can't connect to MySQL server on '127.0.0.1' ([Errno 111] Connection refused)")
+DRIVER ERROR: (2003, "Can't connect to MySQL server on '127.0.0.1' ([Errno 111] Connection refused)")

@@ -1,0 +1,42 @@
+ 25846booted seekdb on 2883
+PASS mock-start
+PASS create-model
+PASS create-endpoint
+PASS create-fail-model
+PASS create-fail-endpoint
+PASS step1-create-ai-column
+PASS step2-metadata-rows | 2
+PASS step2-hidden-cols-summary | 3
+PASS step2-hidden-cols-risky | 3
+PASS step2-six-hidden-cols | 6
+PASS step3-insert1-ok
+PASS step3-insert2-ok
+PASS step3-task-enqueued | 4
+PASS step3-hidden-cols-not-in-select-star | ['id', 'content', 'title', 'summary', 'risky']
+PASS step3-row1-tasks-pending | 2
+PASS step3-result-null
+step3 down-window: 0.46s
+PASS step4-row1-ready | 1
+PASS step4-row2-ready | 1
+PASS step4-tasks-consumed
+PASS step4-deterministic-result | mock:Summarize: alpha
+PASS step5-select-results | ['mock:Summarize: alpha', 'mock:Summarize: beta']
+PASS step6-update-ok
+PASS step6-retask-new-result | 1
+PASS step6-task-drained-again
+PASS step7-update-title-ok
+PASS step7-no-new-task
+PASS step7-result-stable | mock:Summarize: alpha-v2
+PASS step8a-insert-ok
+PASS step8a-terminal-failed
+PASS step8a-failed-result-null | 1
+PASS step8a-summary-still-ok | 1
+PASS step8a-failed-tasks-removed
+PASS step8b-strict-read-errors | OperationalError(11120, 'AI column table_id=505125, column_id=20 is not ready')
+PASS step8b-strict-ready-col-passes | None
+PASS step8b-strict-off-passes | None
+PASS step8c-retry-ok
+PASS step8c-retry-republished | 1
+PASS step8c-tasks-drained
+
+PASSED: 38  FAILED: 0

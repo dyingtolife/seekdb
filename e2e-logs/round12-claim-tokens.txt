@@ -1,0 +1,11 @@
+ai claim end(claim_token=1793344543258031
+ai claim end(claim_token=1793344543816629
+ai claim end(claim_token=1793344544393696
+claimed=2
+claimed=4
+ai worker: execute task done(task.task_id_=1, call_ret=-4002
+ai worker: execute task done(task.task_id_=3, call_ret=-4002
+ai worker: execute task done(task.task_id_=4, call_ret=-4002
+ai worker: execute task done(task.task_id_=6, call_ret=-4002
+ai worker: execute task done(task.task_id_=1, call_ret=-4002
+ai worker: execute task done(task.task_id_=3, call_ret=-4002
