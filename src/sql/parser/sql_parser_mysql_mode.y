@@ -4919,13 +4919,13 @@ ai_config_list ',' ai_config_item
 ;
 
 ai_config_item:
-SYNC_MODE '=' STRING_VALUE
+SYNC_MODE COMP_EQ STRING_VALUE
 {
   ParseNode *value = $3;
   malloc_non_terminal_node($$, result->malloc_pool_, T_AI_CONFIG_ITEM, 2, NULL, value);
   $$->value_ = AI_CONFIG_SYNC_MODE;
 }
-| MAX_RETRIES '=' INTNUM
+| MAX_RETRIES COMP_EQ INTNUM
 {
   ParseNode *value = $3;
   malloc_non_terminal_node($$, result->malloc_pool_, T_AI_CONFIG_ITEM, 2, NULL, value);
