@@ -15,6 +15,8 @@
 #include "share/schema/ob_ai_column_task_service.h"
 #include "share/inner_table/ob_inner_table_schema.h"
 #include "share/schema/ob_table_schema.h"
+#include "share/schema/ob_multi_version_schema_service.h"
+#include "share/schema/ob_schema_getter_guard.h"
 #include "common/mysqlclient/ob_mysql_proxy.h"
 #include "common/object/ob_object.h"
 
@@ -28,7 +30,43 @@ namespace schema
 using namespace common;
 using namespace common::sqlclient;
 
-const char *OB_AI_COLUMN_TASK_TABLE = "__all_ai_column_task";
+namespace
+{
+// Renders "`db`.`table`" for the data table of an AI column task. Statements
+// built here may run over a connection whose default database is not the
+// table's database (session inner connection: the user database; worker: the
+// server SQL proxy), so the data table must be schema-qualified as well.
+int get_qualified_table_name(const ObTableSchema &table_schema, ObSqlString &out)
+{
+  int ret = OB_SUCCESS;
+  ObSchemaGetterGuard guard;
+  const ObDatabaseSchema *db_schema = NULL;
+  if (OB_FAIL(ObMultiVersionSchemaService::get_instance().get_runtime_schema_guard(guard))) {
+    SHARE_SCHEMA_LOG(ERROR, "get runtime schema guard failed", K(ret));
+  } else if (OB_FAIL(guard.get_database_schema(table_schema.get_database_id(), db_schema))) {
+    SHARE_SCHEMA_LOG(ERROR, "get database schema failed", K(ret),
+                     K(table_schema.get_database_id()));
+  } else if (OB_ISNULL(db_schema)) {
+    ret = OB_ERR_UNEXPECTED;
+    SHARE_SCHEMA_LOG(ERROR, "database schema missing", K(ret),
+                     K(table_schema.get_database_id()));
+  } else if (OB_FAIL(out.assign_fmt("`%.*s`.`%.*s`",
+                                    db_schema->get_database_name_str().length(),
+                                    db_schema->get_database_name_str().ptr(),
+                                    table_schema.get_table_name_str().length(),
+                                    table_schema.get_table_name_str().ptr()))) {
+    SHARE_SCHEMA_LOG(ERROR, "build qualified table name failed", K(ret));
+  }
+  return ret;
+}
+}  // namespace
+
+// The queue lives in the system database. The AI column DML linkage runs its
+// statements over the *session inner connection*, whose default database is
+// the user database, and the background worker runs over the server SQL proxy:
+// an unqualified table name resolves against the current database and fails
+// with 1146 (table does not exist). Statements are schema-qualified below.
+const char *OB_AI_COLUMN_TASK_TABLE = "oceanbase.__all_ai_column_task";
 
 int ObAiColumnTaskService::exec_write(ObISQLClient &sql_client,
                                       const ObSqlString &sql,
@@ -37,7 +75,9 @@ int ObAiColumnTaskService::exec_write(ObISQLClient &sql_client,
   int ret = OB_SUCCESS;
   affected_rows = 0;
   if (OB_FAIL(sql_client.write(sql.ptr(), affected_rows))) {
-    SHARE_SCHEMA_LOG(WARN, "ai column task write failed", K(ret), "sql", sql.ptr());
+    // ERROR level on purpose: this build compiles out WARN, and a silent write
+    // failure here drops the whole AI linkage without any trace.
+    SHARE_SCHEMA_LOG(ERROR, "ai column task write failed", K(ret), "sql", sql.ptr());
   }
   return ret;
 }
@@ -52,18 +92,24 @@ int ObAiColumnTaskService::next_task_id(ObISQLClient &sql_client, int64_t &task_
   ObSqlString sql;
   SMART_VAR(ObMySQLProxy::MySQLResult, res) {
     ObMySQLResult *result = NULL;
-    if (OB_FAIL(sql.assign("SELECT MAX(task_id) AS max_id FROM __all_ai_column_task"))) {
-      SHARE_SCHEMA_LOG(WARN, "build max task id sql failed", K(ret));
+    // IFNULL + CAST: MAX() over an empty queue is NULL and the inner SQL
+    // result rejects NULL/non-ObIntTC values (OB_ERR_NULL_VALUE /
+    // OB_OBJ_TYPE_ERROR), which used to drop the whole enqueue silently.
+    if (OB_FAIL(sql.assign_fmt(
+            "SELECT CAST(IFNULL(MAX(task_id), 0) AS SIGNED) AS max_id FROM %s",
+            OB_AI_COLUMN_TASK_TABLE))) {
+      SHARE_SCHEMA_LOG(ERROR, "build max task id sql failed", K(ret));
     } else if (OB_FAIL(sql_client.read(res, sql.ptr()))) {
-      SHARE_SCHEMA_LOG(WARN, "read max task id failed", K(ret));
+      SHARE_SCHEMA_LOG(ERROR, "read max task id failed", K(ret), "sql", sql.ptr());
     } else if (OB_ISNULL(result = res.get_result())) {
       ret = OB_ERR_UNEXPECTED;
+      SHARE_SCHEMA_LOG(ERROR, "max task id result missing", K(ret), "sql", sql.ptr());
     } else if (OB_FAIL(result->next())) {
-      SHARE_SCHEMA_LOG(WARN, "read max task id next failed", K(ret));
+      SHARE_SCHEMA_LOG(ERROR, "read max task id next failed", K(ret), "sql", sql.ptr());
     } else {
       int64_t max_id = 0;
       if (OB_FAIL(result->get_int("max_id", max_id))) {
-        SHARE_SCHEMA_LOG(WARN, "read max task id failed", K(ret));
+        SHARE_SCHEMA_LOG(ERROR, "read max task id value failed", K(ret), "sql", sql.ptr());
       } else {
         task_id = max_id + 1;
       }
@@ -89,8 +135,14 @@ int ObAiColumnTaskService::splice_task_insert(const uint64_t table_id,
                                     ObHexEscapeSqlStr(rowkey_predicate)))) {
   } else if (OB_FAIL(dml.add_column("request_id",
                                     ObHexEscapeSqlStr(request_id)))) {
-  } else if (OB_FAIL(dml.add_column("eligible_ts", "now(6)"))) {
-    // eligible immediately (ObDMLSqlSplicer renders it as raw SQL text)
+  } else if (OB_FAIL(dml.add_column("eligible_ts",
+                                    // ObDMLSqlSplicer quotes every non-PK value, so a raw
+                                    // now(6) cannot be expressed here: the literal string
+                                    // 'now(6)' reached a timestamp column and failed with
+                                    // OB_INVALID_DATE_VALUE (-4219). A fixed timestamp in
+                                    // the past means "eligible immediately" whatever the
+                                    // session time zone is.
+                                    "1970-01-02 00:00:00.000000"))) {
   } else if (OB_FAIL(dml.add_column("definition_version", definition_version))) {
   } else if (OB_FAIL(dml.add_column("status", "PENDING"))) {
   } else if (OB_FAIL(dml.add_column("retries", 0))) {
@@ -112,8 +164,12 @@ int ObAiColumnTaskService::enqueue_tasks(ObISQLClient &sql_client,
   if (ai_columns.count() <= 0) {
     // no AI columns: nothing to enqueue
   } else if (OB_FAIL(next_task_id(sql_client, task_id))) {
-    SHARE_SCHEMA_LOG(WARN, "allocate task id failed", K(ret));
+    SHARE_SCHEMA_LOG(ERROR, "allocate task id failed", K(ret),
+                     K(table_schema.get_table_id()));
   } else {
+    SHARE_SCHEMA_LOG(ERROR, "ai enqueue begin", K(task_id),
+                     K(table_schema.get_table_id()), "ai_cols", ai_columns.count(),
+                     "rowkey", rowkey_predicate, K(request_id));
     ObDMLSqlSplicer dml;
     for (int64_t i = 0; OB_SUCC(ret) && i < ai_columns.count(); ++i) {
       const ObAiColumnSchema &ai_col = ai_columns.at(i);
@@ -130,10 +186,13 @@ int ObAiColumnTaskService::enqueue_tasks(ObISQLClient &sql_client,
         ObSqlString sql;
         int64_t affected = 0;
         if (OB_FAIL(dml.splice_insert_sql(OB_AI_COLUMN_TASK_TABLE, sql))) {
-          SHARE_SCHEMA_LOG(WARN, "splice insert sql failed", K(ret));
+          SHARE_SCHEMA_LOG(ERROR, "splice insert sql failed", K(ret));
         } else if (OB_FAIL(exec_write(sql_client, sql, affected))) {
-          SHARE_SCHEMA_LOG(WARN, "insert ai task failed", K(ret));
+          SHARE_SCHEMA_LOG(ERROR, "insert ai task failed", K(ret), K(task_id),
+                           K(ai_col.column_id_), "sql", sql.ptr());
         } else {
+          SHARE_SCHEMA_LOG(ERROR, "ai task enqueued", K(task_id), K(ai_col.column_id_),
+                           K(affected), "sql", sql.ptr());
           ++task_id;  // subsequent columns of the same row change get new ids
         }
       }
@@ -161,12 +220,16 @@ int ObAiColumnTaskService::invalidate_row(ObISQLClient &sql_client,
       ret = OB_ERR_UNEXPECTED;
       SHARE_SCHEMA_LOG(WARN, "invalidate hidden column missing", K(ret));
     } else {
+      ObSqlString qualified_table;
       ObSqlString sql;
       int64_t affected = 0;
-      if (OB_FAIL(sql.assign_fmt(
-              "UPDATE %.*s SET %.*s = NULL, %.*s = 'PENDING', %.*s = '%.*s' WHERE %.*s",
-              table_schema.get_table_name_str().length(),
-              table_schema.get_table_name_str().ptr(),
+      if (OB_FAIL(get_qualified_table_name(table_schema, qualified_table))) {
+        SHARE_SCHEMA_LOG(ERROR, "build qualified table name failed", K(ret),
+                         K(table_schema.get_database_id()));
+      } else if (OB_FAIL(sql.assign_fmt(
+              "UPDATE %.*s SET `%.*s` = NULL, `%.*s` = 'PENDING', `%.*s` = '%.*s'"
+              " WHERE %.*s",
+              qualified_table.length(), qualified_table.ptr(),
               result_col->get_column_name_str().length(),
               result_col->get_column_name_str().ptr(),
               state_col->get_column_name_str().length(),
@@ -175,9 +238,11 @@ int ObAiColumnTaskService::invalidate_row(ObISQLClient &sql_client,
               request_col->get_column_name_str().ptr(),
               request_id.length(), request_id.ptr(),
               rowkey_predicate.length(), rowkey_predicate.ptr()))) {
-        SHARE_SCHEMA_LOG(WARN, "build invalidate sql failed", K(ret));
+        SHARE_SCHEMA_LOG(ERROR, "build invalidate sql failed", K(ret));
       } else if (OB_FAIL(exec_write(sql_client, sql, affected))) {
-        SHARE_SCHEMA_LOG(WARN, "invalidate row failed", K(ret), "sql", sql.ptr());
+        SHARE_SCHEMA_LOG(ERROR, "invalidate row failed", K(ret), "sql", sql.ptr());
+      } else {
+        SHARE_SCHEMA_LOG(ERROR, "ai invalidate row done", K(affected), "sql", sql.ptr());
       }
     }
   }
@@ -357,12 +422,16 @@ int ObAiColumnTaskService::publish_group(ObISQLClient &sql_client,
       ret = OB_ERR_UNEXPECTED;
       SHARE_SCHEMA_LOG(WARN, "publish hidden column missing", K(ret));
     } else {
+      ObSqlString qualified_table;
       ObSqlString sql;
       int64_t affected = 0;
-      if (OB_FAIL(sql.assign_fmt(
-              "UPDATE %.*s SET %.*s = %.*s, %.*s = 'READY' WHERE %.*s AND %.*s = '%.*s'",
-              table_schema.get_table_name_str().length(),
-              table_schema.get_table_name_str().ptr(),
+      if (OB_FAIL(get_qualified_table_name(table_schema, qualified_table))) {
+        SHARE_SCHEMA_LOG(ERROR, "build qualified table name failed", K(ret),
+                         K(table_schema.get_database_id()));
+      } else if (OB_FAIL(sql.assign_fmt(
+              "UPDATE %.*s SET `%.*s` = %.*s, `%.*s` = 'READY'"
+              " WHERE %.*s AND `%.*s` = '%.*s'",
+              qualified_table.length(), qualified_table.ptr(),
               result_col->get_column_name_str().length(),
               result_col->get_column_name_str().ptr(),
               entries.at(i).value_.length(), entries.at(i).value_.ptr(),
@@ -372,9 +441,12 @@ int ObAiColumnTaskService::publish_group(ObISQLClient &sql_client,
               request_col->get_column_name_str().length(),
               request_col->get_column_name_str().ptr(),
               request_id.length(), request_id.ptr()))) {
-        SHARE_SCHEMA_LOG(WARN, "build publish sql failed", K(ret));
+        SHARE_SCHEMA_LOG(ERROR, "build publish sql failed", K(ret));
       } else if (OB_FAIL(exec_write(sql_client, sql, affected))) {
-        SHARE_SCHEMA_LOG(WARN, "publish result failed", K(ret), "sql", sql.ptr());
+        SHARE_SCHEMA_LOG(ERROR, "publish result failed", K(ret), "sql", sql.ptr());
+      } else {
+        SHARE_SCHEMA_LOG(ERROR, "ai publish result done", K(affected),
+                         K(entries.at(i).column_id_), "sql", sql.ptr());
       }
       // affected == 0 is legitimate: a newer change already took over the
       // row's request id (latest-wins) or the row was deleted (no revive).
@@ -464,21 +536,26 @@ int ObAiColumnTaskService::publish_failure_group(ObISQLClient &sql_client,
       ret = OB_ERR_UNEXPECTED;
       SHARE_SCHEMA_LOG(WARN, "failure group hidden column missing", K(ret));
     } else {
+      ObSqlString qualified_table;
       ObSqlString sql;
       int64_t affected = 0;
-      if (OB_FAIL(sql.assign_fmt(
-              "UPDATE %.*s SET %.*s = 'FAILED' WHERE %.*s AND %.*s = '%.*s'",
-              table_schema.get_table_name_str().length(),
-              table_schema.get_table_name_str().ptr(),
+      if (OB_FAIL(get_qualified_table_name(table_schema, qualified_table))) {
+        SHARE_SCHEMA_LOG(ERROR, "build qualified table name failed", K(ret),
+                         K(table_schema.get_database_id()));
+      } else if (OB_FAIL(sql.assign_fmt(
+              "UPDATE %.*s SET `%.*s` = 'FAILED' WHERE %.*s AND `%.*s` = '%.*s'",
+              qualified_table.length(), qualified_table.ptr(),
               state_col->get_column_name_str().length(),
               state_col->get_column_name_str().ptr(),
               rowkey_predicate.length(), rowkey_predicate.ptr(),
               request_col->get_column_name_str().length(),
               request_col->get_column_name_str().ptr(),
               request_id.length(), request_id.ptr()))) {
-        SHARE_SCHEMA_LOG(WARN, "build failure publish sql failed", K(ret));
+        SHARE_SCHEMA_LOG(ERROR, "build failure publish sql failed", K(ret));
       } else if (OB_FAIL(exec_write(sql_client, sql, affected))) {
-        SHARE_SCHEMA_LOG(WARN, "publish failure failed", K(ret));
+        SHARE_SCHEMA_LOG(ERROR, "publish failure failed", K(ret), "sql", sql.ptr());
+      } else {
+        SHARE_SCHEMA_LOG(ERROR, "ai publish failure done", K(affected), "sql", sql.ptr());
       }
     }
   }

@@ -239,7 +239,7 @@ int ObAiColumnWorker::process_one_task(ObMySQLProxy &sql_proxy,
     // Table dropped: drop its stale tasks.
     ObSqlString del_sql;
     int64_t affected = 0;
-    if (OB_FAIL(del_sql.assign_fmt("DELETE FROM __all_ai_column_task WHERE table_id = %" PRIu64,
+    if (OB_FAIL(del_sql.assign_fmt("DELETE FROM oceanbase.__all_ai_column_task WHERE table_id = %" PRIu64,
                                    task.table_id_))) {
       SERVER_LOG(WARN, "build stale task del sql failed", K(ret));
     } else if (OB_FAIL(sql_proxy.write(del_sql.ptr(), affected))) {
@@ -261,8 +261,9 @@ int ObAiColumnWorker::process_one_task(ObMySQLProxy &sql_proxy,
     if (OB_ISNULL(ai_col)) {
       ObSqlString del_sql;
       int64_t affected = 0;
-      ret = del_sql.assign_fmt("DELETE FROM __all_ai_column_task WHERE table_id = %" PRIu64
-                               " AND task_id = %" PRIu64, task.table_id_, task.task_id_);
+      ret = del_sql.assign_fmt("DELETE FROM oceanbase.__all_ai_column_task"
+                               " WHERE table_id = %" PRIu64 " AND task_id = %" PRIu64,
+                               task.table_id_, task.task_id_);
       if (OB_FAIL(ret)) {
       } else if (OB_FAIL(sql_proxy.write(del_sql.ptr(), affected))) {
         SERVER_LOG(WARN, "drop stale task failed", K(ret));
