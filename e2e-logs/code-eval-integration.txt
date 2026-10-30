@@ -106,3 +106,29 @@ id	name	score
 note: the suite installs its CSV/JSONL/Parquet fixtures via the ssh/scp
       shims into $OBSERVER_DIR/data_for_mysqltest_file_sql and removes that
       directory again in remove_file_sql_data.inc, so nothing is left behind.
+
+=== (d) cross-feature coexistence smoke test - one server session, one binary ===
+file SQL (COPY TO / read_csv / DESCRIBE) feeds an AI COLUMN table (AI_COMPLETE),
+results produced by the AI column worker and read back; strict-read GUC settable.
+=== boot integrated binary on a fresh base dir (default params) ===
+PASS boot | started pid=30210
+=== mock AI service on 19131 ===
+PASS mock-up
+PASS enable_file_sql session
+=== feature 2 (file SQL), same session ===
+PASS read_csv round-trip | ((1, 'alpha'), (2, 'beta'))
+PASS describe file table | (('id', 'BIGINT', 'NO', None, None, None), ('content', 'VARCHAR', 'NO', None, None, None))
+PASS file-table aggregate | ((2,),)
+PASS copy-query-to-file
+PASS copy-output-readable | '1,"alpha"\n2,"beta"\n'
+=== feature 3 (AI COLUMN) + cross-feature INSERT..SELECT from the file table ===
+PASS create-ai-model
+PASS create-ai-endpoint
+PASS create-ai-column-table
+PASS insert-select-from-file-table
+PASS rows-inserted | ((2,),)
+PASS ai-column-worker-produced-results | 2
+PASS ai-column-values-readable | ((1, 'alpha', 'mock:Summarize: alpha'), (2, 'beta', 'mock:Summarize: beta'))
+PASS strict-read-guc-settable
+SMOKE passed=16 failed=0
+SMOKE_EXIT=0
